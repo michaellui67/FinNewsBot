@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from huggingface_hub import InferenceClient
-from tavily import TavilyClient
+import httpx
 
 # Load environment variables
 load_dotenv()
@@ -16,9 +16,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1")
-
-# Initialize Tavily client (will be set in main())
-tavily_client = None
+TAVILY_API_URL = "https://api.tavily.com/search"
 
 # Initialize Hugging Face Inference client (will be set in main())
 hf = None
@@ -141,16 +139,24 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_financial_news(update.message.chat_id, context)
 
 async def search_financial_news(query: str = "latest stock market cryptocurrency news") -> str:
-    """Search for financial news using Tavily."""
+    """Search for financial news using Tavily API."""
     try:
-        # Search for financial news
-        search_results = tavily_client.search(
-            query=query,
-            search_depth="advanced",
-            max_results=5,
-            include_answer=True,
-            include_raw_content=False
-        )
+        # Make API request to Tavily
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                TAVILY_API_URL,
+                json={
+                    "api_key": TAVILY_API_KEY,
+                    "query": query,
+                    "search_depth": "advanced",
+                    "max_results": 5,
+                    "include_answer": True,
+                    "include_raw_content": False
+                },
+                timeout=30.0
+            )
+            response.raise_for_status()
+            search_results = response.json()
         
         # Format results
         news_items = []
@@ -259,7 +265,7 @@ async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot."""
-    global tavily_client, hf
+    global hf
     
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
@@ -267,9 +273,6 @@ def main():
         raise ValueError("TAVILY_API_KEY not found in environment variables")
     if not HF_TOKEN:
         raise ValueError("HF_TOKEN not found in environment variables")
-    
-    # Initialize Tavily client
-    tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
     
     # Initialize Hugging Face Inference client
     print("Initializing Hugging Face Inference client...")
