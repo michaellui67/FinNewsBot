@@ -5,7 +5,6 @@ from typing import Dict
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from huggingface_hub import InferenceClient
 import httpx
 
 # Load environment variables
@@ -17,9 +16,8 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1")
 TAVILY_API_URL = "https://api.tavily.com/search"
-
-# Initialize Hugging Face Inference client (will be set in main())
-hf = None
+# Use the new router endpoint instead of the deprecated api-inference endpoint
+HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL_NAME}"
 
 # User data storage (in production, use a database)
 USER_DATA_FILE = "user_data.json"
@@ -182,15 +180,48 @@ async def process_with_llm(query: str, context: str) -> str:
         # Combine query and context
         prompt = f"Based on this financial news context: {context[:500]}\n\nSummarize the key points about: {query}"
         
-        # Generate response using Inference API
-        response = hf.text_generation(
-            prompt,
-            max_new_tokens=200,
-            temperature=0.7,
-            return_full_text=False
-        )
+        # Generate response using Inference API with the new router endpoint
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                HF_API_URL,
+                headers={
+                    "Authorization": f"Bearer {HF_TOKEN}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "inputs": prompt,
+                    "parameters": {
+                        "max_new_tokens": 200,
+                        "temperature": 0.7,
+                        "return_full_text": False
+                    }
+                },
+                timeout=60.0
+            )
+            response.raise_for_status()
+            result = response.json()
         
-        summary = response.strip()
+        # Extract the generated text from the response
+        # Hugging Face API can return different formats
+        summary = ""
+        if isinstance(result, list) and len(result) > 0:
+            # Most common format: [{"generated_text": "..."}]
+            if isinstance(result[0], dict):
+                summary = result[0].get("generated_text", "").strip()
+            else:
+                summary = str(result[0]).strip()
+        elif isinstance(result, dict):
+            # Format: {"generated_text": "..."}
+            summary = result.get("generated_text", result.get("text", "")).strip()
+        elif isinstance(result, str):
+            # Direct string response
+            summary = result.strip()
+        else:
+            summary = str(result).strip()
+        
+        if not summary:
+            return "LLM processing error: Empty response from API"
+        
         return summary[:300]  # Limit to 300 characters
     
     except Exception as e:
@@ -265,8 +296,6 @@ async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot."""
-    global hf
-    
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
     if not TAVILY_API_KEY:
@@ -274,15 +303,9 @@ def main():
     if not HF_TOKEN:
         raise ValueError("HF_TOKEN not found in environment variables")
     
-    # Initialize Hugging Face Inference client
-    print("Initializing Hugging Face Inference client...")
-    # Use the new router endpoint instead of the deprecated api-inference endpoint
-    hf = InferenceClient(
-        token=HF_TOKEN,
-        model=HF_MODEL_NAME,
-        base_url="https://router.huggingface.co/hf-inference"
-    )
-    print("Hugging Face client initialized successfully!")
+    print("Bot configuration loaded successfully!")
+    print(f"Using Hugging Face model: {HF_MODEL_NAME}")
+    print(f"Using endpoint: {HF_API_URL}")
     
     # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
