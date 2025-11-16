@@ -276,7 +276,12 @@ def main():
     
     # Initialize Hugging Face Inference client
     print("Initializing Hugging Face Inference client...")
-    hf = InferenceClient(token=HF_TOKEN, model=HF_MODEL_NAME)
+    # Use the new router endpoint instead of the deprecated api-inference endpoint
+    hf = InferenceClient(
+        token=HF_TOKEN,
+        model=HF_MODEL_NAME,
+        base_url="https://router.huggingface.co/hf-inference"
+    )
     print("Hugging Face client initialized successfully!")
     
     # Create application
