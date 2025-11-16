@@ -11,7 +11,7 @@ A Telegram bot that delivers financial news about stocks and cryptocurrencies us
 
 ## Prerequisites
 
-- Python 3.8 or higher
+- Python 3.12.9
 - Telegram Bot Token (get it from [@BotFather](https://t.me/botfather))
 - Tavily API Key (get it from [Tavily](https://tavily.com))
 - Hugging Face API Token (get it from [Hugging Face](https://huggingface.co/settings/tokens))
@@ -39,7 +39,6 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TAVILY_API_KEY=your_tavily_api_key_here
 HF_TOKEN=your_huggingface_api_token_here
-HF_MODEL_NAME=deepseek-ai/DeepSeek-R1  # Optional, defaults to DeepSeek-R1
 ```
 
 ## Usage
@@ -82,7 +81,7 @@ Available intervals:
 
 ### Hugging Face Models
 
-You can change the LLM model by setting `HF_MODEL_NAME` in your `.env` file. The bot uses Hugging Face's Inference API, so you don't need to download models locally. Some recommended models:
+You can change the LLM model by setting `HF_MODEL_NAME` in your `main.py` file. The bot uses Hugging Face's Inference API, so you don't need to download models locally. Some recommended models:
 - `deepseek-ai/DeepSeek-R1` (default) - Advanced reasoning model
 - `meta-llama/Llama-3.1-8B-Instruct` - High-quality instruction following
 - `mistralai/Mistral-7B-Instruct-v0.2` - Fast and efficient
