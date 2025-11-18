@@ -14,7 +14,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
-HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1")
+HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
 TAVILY_API_URL = "https://api.tavily.com/search"
 # Use the new router endpoint instead of the deprecated api-inference endpoint
 HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL_NAME}"
@@ -135,6 +135,15 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Send first news update immediately
     await send_financial_news(update.message.chat_id, context)
+
+async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /news command - send immediate news update."""
+    chat_id = update.effective_chat.id
+    
+    # Optional acknowledgement to show the bot is working
+    await update.message.reply_text("Fetching the latest financial news for you... ⏳")
+    
+    await send_financial_news(chat_id, context)
 
 async def search_financial_news(query: str = "latest stock market cryptocurrency news") -> str:
     """Search for financial news using Tavily API."""
@@ -313,6 +322,7 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("set_interval", set_interval))
+    application.add_handler(CommandHandler("news", news))
     
     # Start periodic task
     job_queue = application.job_queue

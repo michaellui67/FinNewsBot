@@ -69,6 +69,7 @@ Available intervals:
 
 - `/start` - Start the bot and see welcome message
 - `/set_interval <interval>` - Set how frequently you want to receive news updates
+- `/news` - Receive the latest news update immediately on demand
 
 ## How It Works
 
@@ -82,7 +83,7 @@ Available intervals:
 ### Hugging Face Models
 
 You can change the LLM model by setting `HF_MODEL_NAME` in your `main.py` file. The bot uses Hugging Face's Inference API, so you don't need to download models locally. Some recommended models:
-- `deepseek-ai/DeepSeek-R1` (default) - Advanced reasoning model
+- `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` (default) - Lightweight, fast, great for quick inference
 - `meta-llama/Llama-3.1-8B-Instruct` - High-quality instruction following
 - `mistralai/Mistral-7B-Instruct-v0.2` - Fast and efficient
 - `google/gemma-7b-it` - Google's Gemma model
