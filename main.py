@@ -130,14 +130,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 1 day\n"
         f"• 3 days\n"
         f"• 1 week\n\n"
-        f"You can also specify a preferred time:\n"
+        f"You can optionally specify a preferred time (if not specified, updates start from current time):\n"
         f"• /set_interval 1 day 7AM\n"
         f"• /set_interval 1d 7:00\n"
         f"• /set_interval 12 hours 9:30\n\n"
         f"Examples:\n"
-        f"• /set_interval 1 day\n"
-        f"• /set_interval 1d 7AM\n"
-        f"• /set_interval 12h 9:30"
+        f"• /set_interval 1 day (starts from current time)\n"
+        f"• /set_interval 1d 7AM (daily at 7 AM)\n"
+        f"• /set_interval 12h 9:30 (every 12 hours at 9:30)"
     )
     
     await update.message.reply_text(welcome_message)
@@ -155,14 +155,14 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 1d or 1 day\n"
             "• 3d or 3 days\n"
             "• 1w or 1 week\n\n"
-            "You can also specify a preferred time:\n"
+            "You can optionally specify a preferred time (if not specified, updates start from current time):\n"
             "• /set_interval 1 day 7AM\n"
             "• /set_interval 1d 7:00\n"
             "• /set_interval 12 hours 9:30\n\n"
             "Examples:\n"
-            "• /set_interval 1 day\n"
-            "• /set_interval 1d 7AM\n"
-            "• /set_interval 12h 9:30"
+            "• /set_interval 1 day (starts from current time)\n"
+            "• /set_interval 1d 7AM (daily at 7 AM)\n"
+            "• /set_interval 12h 9:30 (every 12 hours at 9:30)"
         )
         return
     
@@ -194,7 +194,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 1d or 1 day\n"
             "• 3d or 3 days\n"
             "• 1w or 1 week\n\n"
-            "You can also add a specific time:\n"
+            "You can optionally add a specific time (if not specified, updates start from current time):\n"
             "• /set_interval 1 day 7AM\n"
             "• /set_interval 1d 7:00\n"
             "• /set_interval 12h 9:30"
@@ -379,12 +379,19 @@ async def search_financial_news(query: str, max_results: int = 1) -> List[Dict]:
         return [{"title": "Error searching for news", "url": "", "content": str(e)}]
 
 def escape_markdown(text: str) -> str:
-    """Escape special Markdown characters to prevent parsing errors."""
-    # Characters that need escaping in Telegram Markdown
-    special_chars = ['*', '_', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    """Escape only the most problematic Markdown characters."""
+    # Only escape characters that commonly break Telegram markdown parsing
+    # Be more conservative to maintain readability
+    replacements = {
+        '*': '\\*',  # Asterisk for bold/italic
+        '_': '\\_',  # Underscore for italic
+        '[': '\\[',  # Square brackets for links
+        ']': '\\]',
+        '`': '\\`',  # Backticks for code
+    }
     
-    for char in special_chars:
-        text = text.replace(char, f'\\{char}')
+    for char, escaped in replacements.items():
+        text = text.replace(char, escaped)
     
     return text
 
@@ -412,16 +419,11 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                 # Clean the content using LLM
                 clean_title, clean_content = await clean_tavily_content(raw_title, raw_content)
                 
-                # Escape markdown characters to prevent parsing errors
-                escaped_title = escape_markdown(clean_title)
-                escaped_content = escape_markdown(clean_content)
-                escaped_url = escape_markdown(url)
-                
                 sections.append(
-                    f"**{label}**\n"
-                    f"{escaped_title}\n"
-                    f"{escaped_content}\n"
-                    f"🔗 {escaped_url}\n"
+                    f"📊 {label}\n"
+                    f"{clean_title}\n"
+                    f"{clean_content}\n"
+                    f"🔗 {url}\n"
                 )
             else:
                 sections.append(f"**{label}**\nNo news found for this category right now.\n")
@@ -432,34 +434,18 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             numbered_sections.append(f"{idx}. {sec}")
 
         message = (
-            "📈 **Financial News Update** 📈\n\n"
+            "📈 Financial News Update 📈\n\n"
             + "\n".join(numbered_sections)
         )
         
-        # Send message (split if too long)
-        try:
-            if len(message) > 4096:
-                # Split message into chunks
-                chunks = [message[i:i+4096] for i in range(0, len(message), 4096)]
-                for chunk in chunks:
-                    await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="Markdown")
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
-        except Exception as markdown_error:
-            # If Markdown parsing fails, send as plain text
-            print(f"Markdown parsing failed: {markdown_error}")
-            try:
-                # Remove markdown formatting and send as plain text
-                plain_message = message.replace("**", "").replace("*", "")
-                if len(plain_message) > 4096:
-                    chunks = [plain_message[i:i+4096] for i in range(0, len(plain_message), 4096)]
-                    for chunk in chunks:
-                        await context.bot.send_message(chat_id=chat_id, text=chunk)
-                else:
-                    await context.bot.send_message(chat_id=chat_id, text=plain_message)
-            except Exception as plain_error:
-                # Last resort: send error message
-                await context.bot.send_message(chat_id=chat_id, text="📈 Financial news update failed due to formatting issues. Please try /news again.")
+        # Send message as plain text to avoid markdown parsing issues
+        if len(message) > 4096:
+            # Split message into chunks
+            chunks = [message[i:i+4096] for i in range(0, len(message), 4096)]
+            for chunk in chunks:
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=message)
         
         # Update last sent time
         data = load_user_data()
@@ -499,7 +485,7 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clean_title, clean_content = await clean_tavily_content(raw_title, raw_content)
         
         sources_text.append(f"[{idx}] {clean_title}\n{clean_content}\nURL: {url}")
-        citations.append(f"[{idx}] {escape_markdown(clean_title)} - {escape_markdown(url)}")
+        citations.append(f"{idx}. {clean_title} - {url}")
 
     prompt = (
         "You are FinNewsBot, an AI analyst. Use the numbered sources below to answer the user question. "
@@ -518,20 +504,11 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = f"LLM processing error: {str(e)}"
 
     message = (
-        f"🧠 **Answer**\n{escape_markdown(answer)}\n\n"
-        "📚 **Sources**\n" + "\n".join(citations)
+        f"🧠 Answer\n{answer}\n\n"
+        "📚 Sources\n" + "\n".join(citations)
     )
 
-    try:
-        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
-    except Exception as markdown_error:
-        # If Markdown parsing fails, send as plain text
-        print(f"Query Markdown parsing failed: {markdown_error}")
-        try:
-            plain_message = message.replace("**", "").replace("*", "")
-            await context.bot.send_message(chat_id=chat_id, text=plain_message)
-        except Exception:
-            await context.bot.send_message(chat_id=chat_id, text="Query response failed due to formatting issues. Please try again.")
+    await context.bot.send_message(chat_id=chat_id, text=message)
 
 async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
     """Check all users and send updates if interval has passed."""

@@ -60,9 +60,9 @@ Set your news interval using:
 /set_interval 1 day
 ```
 
-Add a preferred delivery time by appending it to the command:
+Optionally add a preferred delivery time (if not specified, updates start from current time):
 ```
-/set_interval 1 day - 7:00
+/set_interval 1 day 7:00
 /set_interval 1d 7AM
 ```
 
@@ -79,7 +79,7 @@ Available intervals:
 ## Commands
 
 - `/start` - Start the bot and see welcome message
-- `/set_interval <interval> [ - <time>]` - Set update frequency and optional delivery time (e.g., `/set_interval 1 day - 7AM`)
+- `/set_interval <interval> [<time>]` - Set update frequency and optional delivery time (e.g., `/set_interval 1 day 7AM`). If no time is specified, updates start from current time.
 - `/news` - Receive the latest news update immediately on demand
 - `/query <question>` - Ask any financial question answered by the LLM with Tavily-backed citations
 
