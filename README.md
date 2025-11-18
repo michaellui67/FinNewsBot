@@ -1,10 +1,11 @@
 # FinNewsBot - Financial News Telegram Bot
 
-A Telegram bot that delivers financial news about stocks and cryptocurrencies using Hugging Face LLM models and Tavily web search.
+A Telegram bot that delivers financial news about stocks and cryptocurrencies using Tavily web search.
 
 ## Features
 
 - 🔍 **Web Search**: Integrates with Tavily API for real-time financial news search
+- 🧠 **LLM Q&A**: `/query` command uses DeepSeek-R1-Distill-Qwen-1.5B via Hugging Face Inference to answer questions with cited sources
 - ⏰ **Customizable Intervals**: Set news update frequency and preferred delivery time
 - 📈 **Financial Focus**: Specialized in stock market and cryptocurrency news with diversified categories (Bitcoin, other crypto, stocks, global markets)
 
@@ -13,6 +14,7 @@ A Telegram bot that delivers financial news about stocks and cryptocurrencies us
 - Python 3.12.9
 - Telegram Bot Token (get it from [@BotFather](https://t.me/botfather))
 - Tavily API Key (get it from [Tavily](https://tavily.com))
+- Hugging Face API Token (needs access to `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`)
 
 ## Installation
 
@@ -37,6 +39,7 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TAVILY_API_KEY=your_tavily_api_key_here
 HF_TOKEN=your_huggingface_api_token_here
+HF_MODEL_NAME=deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B  # optional override
 ```
 
 ## Usage
@@ -78,6 +81,7 @@ Available intervals:
 - `/start` - Start the bot and see welcome message
 - `/set_interval <interval> [ - <time>]` - Set update frequency and optional delivery time (e.g., `/set_interval 1 day - 7AM`)
 - `/news` - Receive the latest news update immediately on demand
+- `/query <question>` - Ask any financial question answered by the LLM with Tavily-backed citations
 
 ## How It Works
 
@@ -88,15 +92,25 @@ Available intervals:
 
 ## Configuration
 
-### Hugging Face Models
+### News Categories
 
-You can change the LLM model by setting `HF_MODEL_NAME` in your `main.py` file. The bot uses Hugging Face's Inference API, so you don't need to download models locally. Some recommended models:
-- `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` (default) - Lightweight, fast, great for quick inference
-- `meta-llama/Llama-3.1-8B-Instruct` - High-quality instruction following
-- `mistralai/Mistral-7B-Instruct-v0.2` - Fast and efficient
-- `google/gemma-7b-it` - Google's Gemma model
+`main.py` defines five Tavily search queries that map to the slots in each update:
 
-Note: The bot uses Hugging Face's Inference API, so no local model download is required. Make sure your HF_TOKEN has access to the model you choose.
+1. Bitcoin
+2. Other crypto (non-Bitcoin)
+3. Crypto market overview
+4. Individual stocks
+5. Global stock/indices & macro news
+
+Adjust those query strings if you want different coverage.
+
+### LLM Settings
+
+The `/query` command uses the Hugging Face Inference API:
+
+- `HF_MODEL_NAME` defaults to `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`
+- `HF_TOKEN` must have access to this model
+- Responses cite the numbered Tavily sources (e.g., `[1]`)
 
 ## Data Storage
 
@@ -104,9 +118,8 @@ User preferences are stored in `user_data.json`. In production, consider using a
 
 ## Troubleshooting
 
-- **API errors**: Verify your API keys (TELEGRAM_BOT_TOKEN, TAVILY_API_KEY, HF_TOKEN) are correct in the `.env` file
+- **API errors**: Verify your API keys (TELEGRAM_BOT_TOKEN, TAVILY_API_KEY) are correct in the `.env` file
 - **No news updates**: Check that your interval is set correctly and the bot is running
-- **HF_TOKEN issues**: Make sure your Hugging Face token has access to the model you're using
 
 ## License
 

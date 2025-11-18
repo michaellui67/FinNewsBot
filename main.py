@@ -13,7 +13,10 @@ load_dotenv()
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
+HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
 TAVILY_API_URL = "https://api.tavily.com/search"
+HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL_NAME}"
 
 # User data storage (in production, use a database)
 USER_DATA_FILE = "user_data.json"
@@ -219,6 +222,53 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await send_financial_news(chat_id, context)
 
+async def fetch_tavily_sources(query: str, max_results: int = 5) -> List[Dict]:
+    """Search Tavily for general queries and return structured sources."""
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "advanced",
+        "max_results": max_results,
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(TAVILY_API_URL, json=payload, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("results", [])[:max_results]
+    except Exception as e:
+        return [{"title": "Error fetching sources", "url": "", "content": str(e)}]
+
+async def run_llm(prompt: str) -> str:
+    """Call Hugging Face Inference API with DeepSeek model."""
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "inputs": prompt,
+        "parameters": {
+            "max_new_tokens": 400,
+            "temperature": 0.6,
+            "return_full_text": False,
+        },
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(HF_API_URL, headers=headers, json=body, timeout=60.0)
+        response.raise_for_status()
+        result = response.json()
+    if isinstance(result, list) and result:
+        if isinstance(result[0], dict):
+            return result[0].get("generated_text", "").strip()
+        return str(result[0]).strip()
+    if isinstance(result, dict):
+        return result.get("generated_text", result.get("text", "")).strip()
+    if isinstance(result, str):
+        return result.strip()
+    return str(result).strip()
+
 async def search_financial_news(query: str, max_results: int = 1) -> List[Dict]:
     """Search for financial news using Tavily API and return raw results list."""
     try:
@@ -302,6 +352,52 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         except:
             print(f"Failed to send error message: {error_msg}")
 
+async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /query command - answer user question using LLM with Tavily sources."""
+    if not context.args:
+        await update.message.reply_text("Please provide a question, e.g. /query What is the bitcoin fear and greed index today?")
+        return
+    question = " ".join(context.args).strip()
+    chat_id = update.effective_chat.id
+    await update.message.reply_text("🔍 Searching for up-to-date sources...")
+
+    sources = await fetch_tavily_sources(question, max_results=5)
+    if not sources:
+        await context.bot.send_message(chat_id=chat_id, text="No sources found at the moment. Please try again later.")
+        return
+
+    sources_text = []
+    citations = []
+    for idx, item in enumerate(sources, start=1):
+        title = item.get("title", "No title")
+        url = item.get("url", "")
+        content = item.get("content", "")[:500]
+        sources_text.append(f"[{idx}] {title}\n{content}\nURL: {url}")
+        citations.append(f"[{idx}] {title} - {url}")
+
+    prompt = (
+        "You are FinNewsBot, an AI analyst. Use the numbered sources below to answer the user question. "
+        "Cite sources inline with their bracket numbers (e.g., [1]). "
+        "Only use information from the sources. If the answer isn't there, say you couldn't find it.\n\n"
+        f"Question: {question}\n\n"
+        "Sources:\n"
+        + "\n\n".join(sources_text)
+    )
+
+    try:
+        answer = await run_llm(prompt)
+        if not answer:
+            answer = "LLM returned an empty response."
+    except Exception as e:
+        answer = f"LLM processing error: {str(e)}"
+
+    message = (
+        f"🧠 **Answer**\n{answer}\n\n"
+        "📚 **Sources**\n" + "\n".join(citations)
+    )
+
+    await context.bot.send_message(chat_id=chat_id, text=message, parse_mode="Markdown")
+
 async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
     """Check all users and send updates if interval has passed."""
     data = load_user_data()
@@ -344,8 +440,7 @@ def main():
         raise ValueError("HF_TOKEN not found in environment variables")
     
     print("Bot configuration loaded successfully!")
-    print(f"Using Hugging Face model: {HF_MODEL_NAME}")
-    print(f"Using endpoint: {HF_API_URL}")
+    print("Using Tavily for news search and DeepSeek for LLM answers.")
     
     # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -354,6 +449,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("set_interval", set_interval))
     application.add_handler(CommandHandler("news", news))
+    application.add_handler(CommandHandler("query", query))
     
     # Start periodic task
     job_queue = application.job_queue
