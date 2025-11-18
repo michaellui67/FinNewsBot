@@ -324,7 +324,11 @@ async def run_llm(prompt: str) -> str:
     import asyncio
 
     def _call() -> str:
-        client = InferenceClient(api_key=HF_TOKEN)
+        # Use the new Hugging Face router endpoint
+        client = InferenceClient(
+            api_key=HF_TOKEN,
+            base_url="https://router.huggingface.co/hf-inference"
+        )
         completion = client.chat.completions.create(
             model=HF_MODEL_NAME,
             messages=[
