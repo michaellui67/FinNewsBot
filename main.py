@@ -206,12 +206,8 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_notice = f" at {send_time}" if send_time else ""
     await update.message.reply_text(
         f"✅ Interval set to {display}{time_notice}!\n\n"
-        f"You will receive financial news updates every {display}{time_notice}.\n"
-        f"Your first update will be sent shortly."
+        f"You will receive financial news updates every {display}{time_notice}."
     )
-    
-    # Send first news update immediately
-    await send_financial_news(update.message.chat_id, context)
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /news command - send immediate news update."""
