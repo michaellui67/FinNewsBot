@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import httpx
+from huggingface_hub import InferenceClient
 
 # Load environment variables
 load_dotenv()
@@ -16,7 +17,6 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
 TAVILY_API_URL = "https://api.tavily.com/search"
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL_NAME}"
 
 # User data storage (in production, use a database)
 USER_DATA_FILE = "user_data.json"
@@ -88,15 +88,7 @@ def extract_interval_and_time(raw_input: str) -> Tuple[str, Optional[str], Optio
     interval_part = raw_input.strip()
     if not interval_part:
         return "", None, None
-    # If explicit separator
-    if "-" in interval_part:
-        left, right = interval_part.split("-", 1)
-        interval = left.strip()
-        time_candidate = right.strip()
-        normalized = parse_time_input(time_candidate) if time_candidate else None
-        if time_candidate and not normalized:
-            return interval, None, "Invalid time format. Use values like 7AM or 07:00."
-        return interval, normalized, None
+    
     tokens = interval_part.split()
     normalized = None
     interval_tokens = tokens[:]
@@ -138,7 +130,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 1 day\n"
         f"• 3 days\n"
         f"• 1 week\n\n"
-        f"Example: /set_interval 1 day"
+        f"You can also specify a preferred time:\n"
+        f"• /set_interval 1 day 7AM\n"
+        f"• /set_interval 1d 7:00\n"
+        f"• /set_interval 12 hours 9:30\n\n"
+        f"Examples:\n"
+        f"• /set_interval 1 day\n"
+        f"• /set_interval 1d 7AM\n"
+        f"• /set_interval 12h 9:30"
     )
     
     await update.message.reply_text(welcome_message)
@@ -156,7 +155,14 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 1d or 1 day\n"
             "• 3d or 3 days\n"
             "• 1w or 1 week\n\n"
-            "Example: /set_interval 1 day"
+            "You can also specify a preferred time:\n"
+            "• /set_interval 1 day 7AM\n"
+            "• /set_interval 1d 7:00\n"
+            "• /set_interval 12 hours 9:30\n\n"
+            "Examples:\n"
+            "• /set_interval 1 day\n"
+            "• /set_interval 1d 7AM\n"
+            "• /set_interval 12h 9:30"
         )
         return
     
@@ -187,7 +193,11 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 12h or 12 hours\n"
             "• 1d or 1 day\n"
             "• 3d or 3 days\n"
-            "• 1w or 1 week"
+            "• 1w or 1 week\n\n"
+            "You can also add a specific time:\n"
+            "• /set_interval 1 day 7AM\n"
+            "• /set_interval 1d 7:00\n"
+            "• /set_interval 12h 9:30"
         )
         return
     
@@ -237,33 +247,110 @@ async def fetch_tavily_sources(query: str, max_results: int = 5) -> List[Dict]:
     except Exception as e:
         return [{"title": "Error fetching sources", "url": "", "content": str(e)}]
 
+async def clean_tavily_content(title: str, content: str) -> Tuple[str, str]:
+    """Use LLM to clean Tavily search results by removing navigation, ads, and clutter."""
+    prompt = f"""Clean this news article content by removing navigation menus, ads, social media buttons, feedback prompts, and other website clutter. Keep only the essential news content and title.
+
+Examples of what to remove:
+- Navigation: "Markets Hot Stocks Fear & Greed Index Latest Market News"
+- Feedback: "CNN values your feedback"
+- Social media: "Share Tweet Facebook Twitter LinkedIn"
+- Ads: "Advertisement" "Subscribe to newsletter"
+- Image captions: "Representation of bitcoin shown in an illustration"
+- Copyright: "© 2024 All rights reserved"
+
+Original Title: {title}
+Original Content: {content}
+
+Return the cleaned content in this format (without any labels):
+First line: cleaned title without navigation/clutter and without quotation marks
+Second line: cleaned content focusing on the main news story, 1-2 sentences max"""
+    
+    try:
+        response = await run_llm(prompt)
+        lines = [line.strip() for line in response.split('\n') if line.strip()]
+        
+        if len(lines) >= 2:
+            cleaned_title = lines[0]
+            cleaned_content = lines[1]
+        elif len(lines) == 1:
+            # If only one line, try to split by common patterns
+            if '|' in title:
+                cleaned_title = title.split('|')[0].strip()
+            else:
+                cleaned_title = title
+            cleaned_content = lines[0]
+        else:
+            # Fallback
+            cleaned_title = title
+            cleaned_content = content
+        
+        # Remove quotation marks from title
+        cleaned_title = cleaned_title.strip('"\'""''')
+        
+        # Remove any remaining labels that might have slipped through
+        if cleaned_title.lower().startswith('title:'):
+            cleaned_title = cleaned_title[6:].strip()
+        if cleaned_content.lower().startswith('content:'):
+            cleaned_content = cleaned_content[8:].strip()
+        
+        # Fallback if cleaning resulted in empty content
+        if not cleaned_title or len(cleaned_title) < 5:
+            cleaned_title = title.split('|')[0].strip() if '|' in title else title
+            cleaned_title = cleaned_title.strip('"\'""''')
+        
+        if not cleaned_content or len(cleaned_content) < 20:
+            # Simple fallback: take first meaningful sentence from content
+            sentences = content.split('.')
+            for sentence in sentences:
+                if len(sentence.strip()) > 30:
+                    cleaned_content = sentence.strip() + '.'
+                    break
+            if not cleaned_content:
+                cleaned_content = content[:200] + "..." if len(content) > 200 else content
+        
+        return cleaned_title, cleaned_content
+        
+    except Exception as e:
+        print(f"Error cleaning content with LLM: {e}")
+        # Simple fallback cleaning
+        clean_title = title.split('|')[0].strip() if '|' in title else title
+        clean_title = clean_title.strip('"\'""''')
+        clean_content = content[:200] + "..." if len(content) > 200 else content
+        return clean_title, clean_content
+
 async def run_llm(prompt: str) -> str:
-    """Call Hugging Face Inference API with DeepSeek model."""
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "inputs": prompt,
-        "parameters": {
-            "max_new_tokens": 400,
-            "temperature": 0.6,
-            "return_full_text": False,
-        },
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(HF_API_URL, headers=headers, json=body, timeout=60.0)
-        response.raise_for_status()
-        result = response.json()
-    if isinstance(result, list) and result:
-        if isinstance(result[0], dict):
-            return result[0].get("generated_text", "").strip()
-        return str(result[0]).strip()
-    if isinstance(result, dict):
-        return result.get("generated_text", result.get("text", "")).strip()
-    if isinstance(result, str):
-        return result.strip()
-    return str(result).strip()
+    """Call Hugging Face Inference API with DeepSeek model via InferenceClient chat completions."""
+    import asyncio
+
+    def _call() -> str:
+        client = InferenceClient(api_key=HF_TOKEN)
+        completion = client.chat.completions.create(
+            model=HF_MODEL_NAME,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            max_tokens=400,
+            temperature=0.6,
+        )
+        # Hugging Face OpenAI-compatible schema: choices[0].message.content
+        try:
+            message = completion.choices[0].message
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                return content
+            # content can be a list of parts, join if needed
+            if isinstance(content, list):
+                return " ".join(str(part) for part in content)
+            return str(message)
+        except Exception:
+            return str(completion)
+
+    result = await asyncio.to_thread(_call)
+    return result.strip()
 
 async def search_financial_news(query: str, max_results: int = 1) -> List[Dict]:
     """Search for financial news using Tavily API and return raw results list."""
@@ -304,13 +391,17 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             results = await search_financial_news(query, max_results=1)
             if results:
                 item = results[0]
-                title = item.get("title", "No title")
+                raw_title = item.get("title", "No title")
                 url = item.get("url", "")
-                content = item.get("content", "")[:200]
+                raw_content = item.get("content", "")
+                
+                # Clean the content using LLM
+                clean_title, clean_content = await clean_tavily_content(raw_title, raw_content)
+                
                 sections.append(
                     f"**{label}**\n"
-                    f"{title}\n"
-                    f"{content}...\n"
+                    f"{clean_title}\n"
+                    f"{clean_content}\n"
                     f"🔗 {url}\n"
                 )
             else:
@@ -365,11 +456,15 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sources_text = []
     citations = []
     for idx, item in enumerate(sources, start=1):
-        title = item.get("title", "No title")
+        raw_title = item.get("title", "No title")
         url = item.get("url", "")
-        content = item.get("content", "")[:500]
-        sources_text.append(f"[{idx}] {title}\n{content}\nURL: {url}")
-        citations.append(f"[{idx}] {title} - {url}")
+        raw_content = item.get("content", "")
+        
+        # Clean the content using LLM
+        clean_title, clean_content = await clean_tavily_content(raw_title, raw_content)
+        
+        sources_text.append(f"[{idx}] {clean_title}\n{clean_content}\nURL: {url}")
+        citations.append(f"[{idx}] {clean_title} - {url}")
 
     prompt = (
         "You are FinNewsBot, an AI analyst. Use the numbered sources below to answer the user question. "
