@@ -1,7 +1,7 @@
 import os
 import json
-from datetime import datetime
-from typing import Dict
+from datetime import datetime, timedelta
+from typing import Dict, Optional, Tuple, List
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -13,11 +13,7 @@ load_dotenv()
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")
-HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
 TAVILY_API_URL = "https://api.tavily.com/search"
-# Use the new router endpoint instead of the deprecated api-inference endpoint
-HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL_NAME}"
 
 # User data storage (in production, use a database)
 USER_DATA_FILE = "user_data.json"
@@ -39,14 +35,87 @@ def get_user_interval(user_id: int) -> int:
     data = load_user_data()
     return data.get(str(user_id), {}).get("interval_seconds", None)
 
-def set_user_interval(user_id: int, interval_seconds: int):
-    """Set user's news interval."""
+def set_user_interval(user_id: int, interval_seconds: int, send_time: Optional[str] = None):
+    """Set user's news interval and optional preferred send time."""
     data = load_user_data()
     if str(user_id) not in data:
         data[str(user_id)] = {}
     data[str(user_id)]["interval_seconds"] = interval_seconds
     data[str(user_id)]["last_sent"] = None
+    data[str(user_id)]["send_time"] = send_time
     save_user_data(data)
+
+def parse_time_input(time_input: str) -> Optional[str]:
+    """Parse user provided time strings such as 7AM, 7:00, or 19:30."""
+    if not time_input:
+        return None
+    cleaned = time_input.strip().lower()
+    if not cleaned:
+        return None
+    cleaned = cleaned.replace(".", "")
+    am_pm = None
+    if cleaned.endswith("am") or cleaned.endswith("pm"):
+        am_pm = cleaned[-2:]
+        cleaned = cleaned[:-2]
+    cleaned = cleaned.strip()
+    if ":" in cleaned:
+        hour_part, minute_part = cleaned.split(":", 1)
+    else:
+        hour_part, minute_part = cleaned, "0"
+    if not hour_part.isdigit() or not minute_part.isdigit():
+        return None
+    hour = int(hour_part)
+    minute = int(minute_part)
+    if am_pm:
+        if hour < 1 or hour > 12:
+            return None
+        if am_pm == "am":
+            hour = 0 if hour == 12 else hour
+        else:
+            hour = 12 if hour == 12 else hour + 12
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+def extract_interval_and_time(raw_input: str) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    Split the interval string and optional time component.
+    Returns tuple of (interval_string, normalized_time, error_message_if_any)
+    """
+    interval_part = raw_input.strip()
+    if not interval_part:
+        return "", None, None
+    # If explicit separator
+    if "-" in interval_part:
+        left, right = interval_part.split("-", 1)
+        interval = left.strip()
+        time_candidate = right.strip()
+        normalized = parse_time_input(time_candidate) if time_candidate else None
+        if time_candidate and not normalized:
+            return interval, None, "Invalid time format. Use values like 7AM or 07:00."
+        return interval, normalized, None
+    tokens = interval_part.split()
+    normalized = None
+    interval_tokens = tokens[:]
+    # Try last two tokens first (e.g., "7 PM")
+    for take in (2, 1):
+        if len(tokens) > take:
+            candidate = " ".join(tokens[-take:])
+            parsed = parse_time_input(candidate)
+            if parsed:
+                interval_tokens = tokens[:-take]
+                normalized = parsed
+                break
+    interval = " ".join(interval_tokens).strip()
+    return interval, normalized, None
+
+def align_to_send_time(reference: datetime, send_time_str: str) -> datetime:
+    """Align the reference datetime to the next occurrence of the preferred send time."""
+    hour, minute = map(int, send_time_str.split(":"))
+    candidate = reference.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate < reference:
+        candidate += timedelta(days=1)
+    return candidate
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command - greet user and ask about frequency."""
@@ -88,8 +157,12 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Parse interval
-    interval_str = " ".join(context.args).lower()
+    # Parse interval and optional send time
+    raw_interval_input = " ".join(context.args)
+    interval_str, send_time, error = extract_interval_and_time(raw_interval_input)
+    if error:
+        await update.message.reply_text(error)
+        return
     interval_seconds = None
     
     interval_map = {
@@ -101,7 +174,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1w": 7 * 24 * 3600, "1 week": 7 * 24 * 3600, "1week": 7 * 24 * 3600,
     }
     
-    interval_seconds = interval_map.get(interval_str)
+    interval_seconds = interval_map.get(interval_str.lower())
     
     if interval_seconds is None:
         await update.message.reply_text(
@@ -115,7 +188,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    set_user_interval(user_id, interval_seconds)
+    set_user_interval(user_id, interval_seconds, send_time)
     
     # Format interval for display
     if interval_seconds < 3600:
@@ -127,9 +200,10 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         display = f"{interval_seconds // 604800} week(s)"
     
+    time_notice = f" at {send_time}" if send_time else ""
     await update.message.reply_text(
-        f"✅ Interval set to {display}!\n\n"
-        f"You will receive financial news updates every {display}.\n"
+        f"✅ Interval set to {display}{time_notice}!\n\n"
+        f"You will receive financial news updates every {display}{time_notice}.\n"
         f"Your first update will be sent shortly."
     )
     
@@ -145,10 +219,9 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await send_financial_news(chat_id, context)
 
-async def search_financial_news(query: str = "latest stock market cryptocurrency news") -> str:
-    """Search for financial news using Tavily API."""
+async def search_financial_news(query: str, max_results: int = 1) -> List[Dict]:
+    """Search for financial news using Tavily API and return raw results list."""
     try:
-        # Make API request to Tavily
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 TAVILY_API_URL,
@@ -156,103 +229,55 @@ async def search_financial_news(query: str = "latest stock market cryptocurrency
                     "api_key": TAVILY_API_KEY,
                     "query": query,
                     "search_depth": "advanced",
-                    "max_results": 5,
-                    "include_answer": True,
-                    "include_raw_content": False
+                    "max_results": max_results,
+                    "include_answer": False,
+                    "include_raw_content": False,
                 },
-                timeout=30.0
+                timeout=30.0,
             )
             response.raise_for_status()
             search_results = response.json()
-        
-        # Format results
-        news_items = []
-        if search_results.get("answer"):
-            news_items.append(f"📊 {search_results['answer']}\n")
-        
-        if search_results.get("results"):
-            news_items.append("📰 Top News:\n")
-            for i, result in enumerate(search_results["results"][:5], 1):
-                title = result.get("title", "No title")
-                url = result.get("url", "")
-                content = result.get("content", "")[:200]  # First 200 chars
-                news_items.append(f"{i}. {title}\n{content}...\n🔗 {url}\n")
-        
-        return "\n".join(news_items) if news_items else "No financial news found at the moment."
-    
+        return search_results.get("results", [])[:max_results] if search_results else []
     except Exception as e:
-        return f"Error searching for news: {str(e)}"
-
-async def process_with_llm(query: str, context: str) -> str:
-    """Process query with Hugging Face LLM using Inference API."""
-    try:
-        # Combine query and context
-        prompt = f"Based on this financial news context: {context[:500]}\n\nSummarize the key points about: {query}"
-        
-        # Generate response using Inference API with the new router endpoint
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                HF_API_URL,
-                headers={
-                    "Authorization": f"Bearer {HF_TOKEN}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "inputs": prompt,
-                    "parameters": {
-                        "max_new_tokens": 200,
-                        "temperature": 0.7,
-                        "return_full_text": False
-                    }
-                },
-                timeout=60.0
-            )
-            response.raise_for_status()
-            result = response.json()
-        
-        # Extract the generated text from the response
-        # Hugging Face API can return different formats
-        summary = ""
-        if isinstance(result, list) and len(result) > 0:
-            # Most common format: [{"generated_text": "..."}]
-            if isinstance(result[0], dict):
-                summary = result[0].get("generated_text", "").strip()
-            else:
-                summary = str(result[0]).strip()
-        elif isinstance(result, dict):
-            # Format: {"generated_text": "..."}
-            summary = result.get("generated_text", result.get("text", "")).strip()
-        elif isinstance(result, str):
-            # Direct string response
-            summary = result.strip()
-        else:
-            summary = str(result).strip()
-        
-        if not summary:
-            return "LLM processing error: Empty response from API"
-        
-        return summary[:300]  # Limit to 300 characters
-    
-    except Exception as e:
-        return f"LLM processing error: {str(e)}"
+        return [{"title": "Error searching for news", "url": "", "content": str(e)}]
 
 async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Send financial news to user."""
     try:
-        # Search for financial news
-        news_content = await search_financial_news("latest stock market cryptocurrency news today")
-        
-        # Process with LLM for summary
-        llm_summary = await process_with_llm(
-            "financial markets and cryptocurrency",
-            news_content
-        )
+        # Prepare diverse news categories
+        categories = [
+            ("Bitcoin", "latest bitcoin news today"),
+            ("Other Crypto", "latest cryptocurrency news excluding bitcoin today"),
+            ("Crypto Market", "latest cryptocurrency market overview today"),
+            ("Individual Stocks", "latest individual company stock news today"),
+            ("Global Stock Market", "latest global stock market indices and macroeconomic news today"),
+        ]
+
+        sections: List[str] = []
+        for label, query in categories:
+            results = await search_financial_news(query, max_results=1)
+            if results:
+                item = results[0]
+                title = item.get("title", "No title")
+                url = item.get("url", "")
+                content = item.get("content", "")[:200]
+                sections.append(
+                    f"**{label}**\n"
+                    f"{title}\n"
+                    f"{content}...\n"
+                    f"🔗 {url}\n"
+                )
+            else:
+                sections.append(f"**{label}**\nNo news found for this category right now.\n")
         
         # Format message
+        numbered_sections = []
+        for idx, sec in enumerate(sections, start=1):
+            numbered_sections.append(f"{idx}. {sec}")
+
         message = (
             "📈 **Financial News Update** 📈\n\n"
-            f"{news_content}\n\n"
-            f"🤖 **AI Summary:**\n{llm_summary}"
+            + "\n".join(numbered_sections)
         )
         
         # Send message (split if too long)
@@ -288,14 +313,20 @@ async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
             continue
         
         last_sent_str = user_data.get("last_sent")
+        send_time_str = user_data.get("send_time")
+        
         if last_sent_str:
             last_sent = datetime.fromisoformat(last_sent_str)
-            time_since_last = (current_time - last_sent).total_seconds()
-            if time_since_last < interval_seconds:
-                continue
+            base_time = last_sent + timedelta(seconds=interval_seconds)
         else:
-            # First time, send immediately
-            pass
+            base_time = current_time
+        
+        due_time = base_time
+        if send_time_str:
+            due_time = align_to_send_time(base_time, send_time_str)
+        
+        if current_time < due_time:
+            continue
         
         # Send update
         try:

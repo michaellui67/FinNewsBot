@@ -4,17 +4,15 @@ A Telegram bot that delivers financial news about stocks and cryptocurrencies us
 
 ## Features
 
-- 🤖 **AI-Powered**: Uses Hugging Face LLM models to summarize financial news
 - 🔍 **Web Search**: Integrates with Tavily API for real-time financial news search
-- ⏰ **Customizable Intervals**: Set news update frequency from 3 hours to 1 week
-- 📈 **Financial Focus**: Specialized in stock market and cryptocurrency news
+- ⏰ **Customizable Intervals**: Set news update frequency and preferred delivery time
+- 📈 **Financial Focus**: Specialized in stock market and cryptocurrency news with diversified categories (Bitcoin, other crypto, stocks, global markets)
 
 ## Prerequisites
 
 - Python 3.12.9
 - Telegram Bot Token (get it from [@BotFather](https://t.me/botfather))
 - Tavily API Key (get it from [Tavily](https://tavily.com))
-- Hugging Face API Token (get it from [Hugging Face](https://huggingface.co/settings/tokens))
 
 ## Installation
 
@@ -52,10 +50,20 @@ python main.py
 
 3. Send `/start` to begin
 
-4. Set your news interval using:
+4. Get your news immediately with `/news`
+or
+Set your news interval using:
 ```
 /set_interval 1 day
 ```
+
+Add a preferred delivery time by appending it to the command:
+```
+/set_interval 1 day - 7:00
+/set_interval 1d 7AM
+```
+
+Accepted time formats: `HH:MM` (24-hour) or `H[H]AM/PM`.
 
 Available intervals:
 - `3h` or `3 hours`
@@ -68,14 +76,14 @@ Available intervals:
 ## Commands
 
 - `/start` - Start the bot and see welcome message
-- `/set_interval <interval>` - Set how frequently you want to receive news updates
+- `/set_interval <interval> [ - <time>]` - Set update frequency and optional delivery time (e.g., `/set_interval 1 day - 7AM`)
 - `/news` - Receive the latest news update immediately on demand
 
 ## How It Works
 
-1. The bot uses Tavily API to search for the latest financial news about stocks and cryptocurrencies
-2. The news is processed through a Hugging Face LLM model to generate summaries
-3. News updates are sent to users based on their configured intervals
+1. The bot uses Tavily API to fetch the latest financial news about Bitcoin, other crypto, individual stocks, and global markets
+2. Each update contains up to 5 items, one per category, so you don’t just see 5 Bitcoin headlines in a row
+3. News updates are sent to users based on their configured intervals (and optional delivery time)
 4. The bot checks every 5 minutes if any user is due for an update
 
 ## Configuration
