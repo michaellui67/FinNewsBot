@@ -131,9 +131,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 3 days\n"
         f"• 1 week\n\n"
         f"You can optionally specify a preferred time (if not specified, updates start from current time):\n"
-        f"• /set_interval 1 day 7AM\n"
-        f"• /set_interval 1d 7:00\n"
-        f"• /set_interval 12 hours 9:30\n\n"
         f"Examples:\n"
         f"• /set_interval 1 day (starts from current time)\n"
         f"• /set_interval 1d 7AM (daily at 7 AM)\n"
@@ -378,22 +375,7 @@ async def search_financial_news(query: str, max_results: int = 1) -> List[Dict]:
     except Exception as e:
         return [{"title": "Error searching for news", "url": "", "content": str(e)}]
 
-def escape_markdown(text: str) -> str:
-    """Escape only the most problematic Markdown characters."""
-    # Only escape characters that commonly break Telegram markdown parsing
-    # Be more conservative to maintain readability
-    replacements = {
-        '*': '\\*',  # Asterisk for bold/italic
-        '_': '\\_',  # Underscore for italic
-        '[': '\\[',  # Square brackets for links
-        ']': '\\]',
-        '`': '\\`',  # Backticks for code
-    }
-    
-    for char, escaped in replacements.items():
-        text = text.replace(char, escaped)
-    
-    return text
+
 
 async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Send financial news to user."""
@@ -426,7 +408,7 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                     f"🔗 {url}\n"
                 )
             else:
-                sections.append(f"**{label}**\nNo news found for this category right now.\n")
+                sections.append(f"📊 {label}\nNo news found for this category right now.\n")
         
         # Format message
         numbered_sections = []
