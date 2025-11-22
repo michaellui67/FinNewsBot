@@ -96,11 +96,12 @@ Available intervals:
 
 `main.py` defines five Tavily search queries that map to the slots in each update:
 
-1. Bitcoin
-2. Other crypto (non-Bitcoin)
-3. Crypto market overview
-4. Individual stocks
-5. Global stock/indices & macro news
+1. Economy
+2. Global stock/indices & macro news
+3. Individual stocks
+4. Crypto market
+5. Foreign exchange
+6. Precious metals
 
 Adjust those query strings if you want different coverage.
 
