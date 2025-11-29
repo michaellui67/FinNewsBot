@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import httpx
-from huggingface_hub import InferenceClient
+from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
@@ -14,8 +14,8 @@ load_dotenv()
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")
-HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME", "x-ai/grok-4.1-fast:free")
 TAVILY_API_URL = "https://api.tavily.com/search"
 
 # User data storage (in production, use a database)
@@ -127,13 +127,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 3 hours\n"
         f"• 6 hours\n"
         f"• 12 hours\n"
-        f"• 1 day\n"
+        f"• 1 day / daily\n"
         f"• 3 days\n"
-        f"• 1 week\n\n"
+        f"• 1 week / weekly\n\n"
         f"You can optionally specify a preferred time (if not specified, updates start from current time):\n"
         f"Examples:\n"
-        f"• /set_interval 1 day (starts from current time)\n"
+        f"• /set_interval daily (starts from current time)\n"
         f"• /set_interval 1d 7AM (daily at 7 AM)\n"
+        f"• /set_interval weekly 9:30 (weekly at 9:30)\n"
         f"• /set_interval 12h 9:30 (every 12 hours at 9:30)"
     )
     
@@ -149,16 +150,17 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 3h or 3 hours\n"
             "• 6h or 6 hours\n"
             "• 12h or 12 hours\n"
-            "• 1d or 1 day\n"
+            "• 1d or 1 day or daily\n"
             "• 3d or 3 days\n"
-            "• 1w or 1 week\n\n"
+            "• 1w or 1 week or weekly\n\n"
             "You can optionally specify a preferred time (if not specified, updates start from current time):\n"
             "• /set_interval 1 day 7AM\n"
             "• /set_interval 1d 7:00\n"
             "• /set_interval 12 hours 9:30\n\n"
             "Examples:\n"
-            "• /set_interval 1 day (starts from current time)\n"
+            "• /set_interval daily (starts from current time)\n"
             "• /set_interval 1d 7AM (daily at 7 AM)\n"
+            "• /set_interval weekly 9:30 (weekly at 9:30)\n"
             "• /set_interval 12h 9:30 (every 12 hours at 9:30)"
         )
         return
@@ -175,9 +177,9 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3h": 3 * 3600, "3 hours": 3 * 3600, "3hour": 3 * 3600,
         "6h": 6 * 3600, "6 hours": 6 * 3600, "6hour": 6 * 3600,
         "12h": 12 * 3600, "12 hours": 12 * 3600, "12hour": 12 * 3600,
-        "1d": 24 * 3600, "1 day": 24 * 3600, "1day": 24 * 3600,
+        "1d": 24 * 3600, "1 day": 24 * 3600, "1day": 24 * 3600, "daily": 24 * 3600,
         "3d": 3 * 24 * 3600, "3 days": 3 * 24 * 3600, "3day": 3 * 24 * 3600,
-        "1w": 7 * 24 * 3600, "1 week": 7 * 24 * 3600, "1week": 7 * 24 * 3600,
+        "1w": 7 * 24 * 3600, "1 week": 7 * 24 * 3600, "1week": 7 * 24 * 3600, "weekly": 7 * 24 * 3600,
     }
     
     interval_seconds = interval_map.get(interval_str.lower())
@@ -188,9 +190,9 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• 3h or 3 hours\n"
             "• 6h or 6 hours\n"
             "• 12h or 12 hours\n"
-            "• 1d or 1 day\n"
+            "• daily or 1d or 1 day\n"
             "• 3d or 3 days\n"
-            "• 1w or 1 week\n\n"
+            "• weekly or 1w or 1 week\n\n"
             "You can optionally add a specific time (if not specified, updates start from current time):\n"
             "• /set_interval 1 day 7AM\n"
             "• /set_interval 1d 7:00\n"
@@ -206,7 +208,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif interval_seconds < 86400:
         display = f"{interval_seconds // 3600} hours"
     elif interval_seconds < 604800:
-        display = f"{interval_seconds // 86400} days"
+        display = f"{interval_seconds // 86400} day(s)"
     else:
         display = f"{interval_seconds // 604800} week(s)"
     
@@ -317,17 +319,16 @@ Second line: cleaned content focusing on the main news story, 1-2 sentences max"
         return clean_title, clean_content
 
 async def run_llm(prompt: str) -> str:
-    """Call Hugging Face Inference API with DeepSeek model via InferenceClient chat completions."""
+    """Call OpenRouter API with the configured model."""
     import asyncio
 
     def _call() -> str:
-        # Use the new Hugging Face router endpoint
-        client = InferenceClient(
-            api_key=HF_TOKEN,
-            base_url="https://router.huggingface.co/hf-inference"
+        client = OpenAI(
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1"
         )
         completion = client.chat.completions.create(
-            model=HF_MODEL_NAME,
+            model=MODEL_NAME,
             messages=[
                 {
                     "role": "user",
@@ -337,18 +338,7 @@ async def run_llm(prompt: str) -> str:
             max_tokens=400,
             temperature=0.6,
         )
-        # Hugging Face OpenAI-compatible schema: choices[0].message.content
-        try:
-            message = completion.choices[0].message
-            content = getattr(message, "content", None)
-            if isinstance(content, str):
-                return content
-            # content can be a list of parts, join if needed
-            if isinstance(content, list):
-                return " ".join(str(part) for part in content)
-            return str(message)
-        except Exception:
-            return str(completion)
+        return completion.choices[0].message.content
 
     result = await asyncio.to_thread(_call)
     return result.strip()
@@ -531,11 +521,11 @@ def main():
         raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
     if not TAVILY_API_KEY:
         raise ValueError("TAVILY_API_KEY not found in environment variables")
-    if not HF_TOKEN:
-        raise ValueError("HF_TOKEN not found in environment variables")
+    if not OPENROUTER_API_KEY:
+        raise ValueError("OPENROUTER_API_KEY not found in environment variables")
     
     print("Bot configuration loaded successfully!")
-    print("Using Tavily for news search and DeepSeek for LLM answers.")
+    print(f"Using Tavily for news search and {MODEL_NAME} via OpenRouter for LLM answers.")
     
     # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
