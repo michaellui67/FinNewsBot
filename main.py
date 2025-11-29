@@ -376,7 +376,7 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             ("Global Stock Market", "latest global stock market indices and macroeconomic news today"),
             ("Individual Stocks", "latest individual company stock news today"),
             ("Crypto Market", "latest cryptocurrency market overview today"),
-            ("Forex Market", "latest foreign exchange market overview today")
+            ("Forex Market", "latest foreign exchange market overview today"),
             ("Precious Metals Market", "latest precious metal market overview today")
         ]
 
