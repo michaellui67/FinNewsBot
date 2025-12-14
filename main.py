@@ -44,7 +44,9 @@ def set_user_interval(user_id: int, interval_seconds: int, send_time: Optional[s
     if str(user_id) not in data:
         data[str(user_id)] = {}
     data[str(user_id)]["interval_seconds"] = interval_seconds
-    data[str(user_id)]["last_sent"] = None
+    # Set last_sent to a time in the past to trigger immediate first news
+    past_time = datetime.now() - timedelta(seconds=interval_seconds + 1)
+    data[str(user_id)]["last_sent"] = past_time.isoformat()
     data[str(user_id)]["send_time"] = send_time
     save_user_data(data)
 
@@ -135,7 +137,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• /set_interval daily (starts from current time)\n"
         f"• /set_interval 1d 7AM (daily at 7 AM)\n"
         f"• /set_interval weekly 9:30 (weekly at 9:30)\n"
-        f"• /set_interval 12h 9:30 (every 12 hours at 9:30)"
+        f"• /set_interval 12h 9:30 (every 12 hours at 9:30)\n\n"
+        f"Other commands:\n"
+        f"• /news - Get immediate news update\n"
+        f"• /status - Check your current settings\n"
+        f"• /query <question> - Ask a financial question"
     )
     
     await update.message.reply_text(welcome_message)
@@ -433,6 +439,71 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         except:
             print(f"Failed to send error message: {error_msg}")
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command - show user's current settings and next update time."""
+    user_id = update.effective_user.id
+    data = load_user_data()
+    user_data = data.get(str(user_id), {})
+    
+    interval_seconds = user_data.get("interval_seconds")
+    if not interval_seconds:
+        await update.message.reply_text("❌ No interval set. Use /set_interval to configure news updates.")
+        return
+    
+    last_sent_str = user_data.get("last_sent")
+    send_time_str = user_data.get("send_time")
+    current_time = datetime.now()
+    
+    # Format interval for display
+    if interval_seconds < 3600:
+        display = f"{interval_seconds // 60} minutes"
+    elif interval_seconds < 86400:
+        display = f"{interval_seconds // 3600} hours"
+    elif interval_seconds < 604800:
+        display = f"{interval_seconds // 86400} day(s)"
+    else:
+        display = f"{interval_seconds // 604800} week(s)"
+    
+    # Calculate next update time
+    if last_sent_str:
+        try:
+            last_sent = datetime.fromisoformat(last_sent_str)
+            base_time = last_sent + timedelta(seconds=interval_seconds)
+        except ValueError:
+            base_time = current_time
+    else:
+        base_time = current_time
+    
+    due_time = base_time
+    if send_time_str:
+        due_time = align_to_send_time(base_time, send_time_str)
+    
+    time_notice = f" at {send_time_str}" if send_time_str else ""
+    
+    if current_time >= due_time:
+        next_update = "⏰ Next update: Due now (will be sent within 5 minutes)"
+    else:
+        time_diff = due_time - current_time
+        if time_diff.total_seconds() < 3600:
+            next_update = f"⏰ Next update: In {int(time_diff.total_seconds() // 60)} minutes"
+        elif time_diff.total_seconds() < 86400:
+            next_update = f"⏰ Next update: In {int(time_diff.total_seconds() // 3600)} hours"
+        else:
+            next_update = f"⏰ Next update: {due_time.strftime('%Y-%m-%d %H:%M')}"
+    
+    last_sent_display = "Never" if not last_sent_str else datetime.fromisoformat(last_sent_str).strftime('%Y-%m-%d %H:%M')
+    
+    status_message = (
+        f"📊 Your News Settings\n\n"
+        f"📅 Interval: Every {display}{time_notice}\n"
+        f"📤 Last sent: {last_sent_display}\n"
+        f"{next_update}\n\n"
+        f"💡 Use /news for immediate update\n"
+        f"⚙️ Use /set_interval to change settings"
+    )
+    
+    await update.message.reply_text(status_message)
+
 async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /query command - answer user question using LLM with Tavily sources."""
     if not context.args:
@@ -488,30 +559,43 @@ async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
     data = load_user_data()
     current_time = datetime.now()
     
+    print(f"Checking updates at {current_time}")  # Debug log
+    
     for user_id_str, user_data in data.items():
         interval_seconds = user_data.get("interval_seconds")
         if not interval_seconds:
+            print(f"User {user_id_str}: No interval set, skipping")
             continue
         
         last_sent_str = user_data.get("last_sent")
         send_time_str = user_data.get("send_time")
         
         if last_sent_str:
-            last_sent = datetime.fromisoformat(last_sent_str)
-            base_time = last_sent + timedelta(seconds=interval_seconds)
+            try:
+                last_sent = datetime.fromisoformat(last_sent_str)
+                base_time = last_sent + timedelta(seconds=interval_seconds)
+            except ValueError:
+                print(f"User {user_id_str}: Invalid last_sent format, using current time")
+                base_time = current_time - timedelta(seconds=interval_seconds + 1)
         else:
-            base_time = current_time
+            # If no last_sent, send immediately
+            print(f"User {user_id_str}: No last_sent, scheduling immediate send")
+            base_time = current_time - timedelta(seconds=interval_seconds + 1)
         
         due_time = base_time
         if send_time_str:
             due_time = align_to_send_time(base_time, send_time_str)
+        
+        print(f"User {user_id_str}: Current={current_time}, Due={due_time}, Should send={current_time >= due_time}")
         
         if current_time < due_time:
             continue
         
         # Send update
         try:
+            print(f"Sending news to user {user_id_str}")
             await send_financial_news(int(user_id_str), context)
+            print(f"Successfully sent news to user {user_id_str}")
         except Exception as e:
             print(f"Error sending update to user {user_id_str}: {e}")
 
@@ -534,6 +618,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("set_interval", set_interval))
     application.add_handler(CommandHandler("news", news))
+    application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("query", query))
     
     # Start periodic task
