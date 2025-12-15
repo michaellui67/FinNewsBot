@@ -254,22 +254,9 @@ async def fetch_tavily_sources(query: str, max_results: int = 5) -> List[Dict]:
 
 async def clean_tavily_content(title: str, content: str) -> Tuple[str, str]:
     """Use LLM to clean Tavily search results by removing navigation, ads, and clutter."""
-    prompt = f"""Clean this news article content by removing navigation menus, ads, social media buttons, feedback prompts, and other website clutter. Keep only the essential news content and title.
-
-Examples of what to remove:
-- Navigation: "Markets Hot Stocks Fear & Greed Index Latest Market News"
-- Feedback: "CNN values your feedback"
-- Social media: "Share Tweet Facebook Twitter LinkedIn"
-- Ads: "Advertisement" "Subscribe to newsletter"
-- Image captions: "Representation of bitcoin shown in an illustration"
-- Copyright: "© 2024 All rights reserved"
-
-Original Title: {title}
-Original Content: {content}
-
-Return the cleaned content in this format (without any labels):
-First line: cleaned title without navigation/clutter and without quotation marks
-Second line: cleaned content focusing on the main news story, 1-2 sentences max"""
+    prompt = f"""Summarize this:
+                    {title}
+                    {content}"""
     
     try:
         response = await run_llm(prompt)

@@ -39,14 +39,14 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TAVILY_API_KEY=your_tavily_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here
-MODEL_NAME=x-ai/grok-2-1212  # optional override, defaults to Grok 2 1212 (free)
+MODEL_NAME=x-ai/grok-4.1-fast:free  # optional override, defaults to Grok 4.1 Fast (free)
 ```
 
 ## Recommended Free Models
 
 All these models are available for free on OpenRouter:
 
-- **Grok 2 1212** (`x-ai/grok-2-1212`) - Default, fast and capable
+- **Grok 2 1212** (`x-ai/grok-4.1-fast`) - Default, fast and capable
 - **DeepSeek R1** (`deepseek/deepseek-r1`) - Excellent reasoning capabilities  
 - **Llama 3.1 70B** (`meta-llama/llama-3.1-70b-instruct`) - Strong general performance
 
@@ -91,7 +91,7 @@ Available intervals:
 
 - `/start` - Start the bot and see welcome message
 - `/set_interval <interval> [<time>]` - Set update frequency and optional delivery time (e.g., `/set_interval daily 7AM` or `/set_interval weekly 9:30`). If no time is specified, updates start from current time.
-- `/news` - Receive the latest news update immediately on demand
+- `/news` - Receive the latest news update immediately
 - `/query <question>` - Ask any financial question answered by the LLM with Tavily-backed citations
 
 ## How It Works
