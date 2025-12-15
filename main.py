@@ -439,21 +439,6 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         except:
             print(f"Failed to send error message: {error_msg}")
 
-async def check_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /check_updates command - manually trigger the update check."""
-    if update.effective_user.id != update.effective_chat.id:
-        # Only allow in private chats for security
-        await update.message.reply_text("This command only works in private chats.")
-        return
-    
-    await update.message.reply_text("🔍 Checking for pending updates...")
-    
-    try:
-        await check_and_send_updates(context)
-        await update.message.reply_text("✅ Update check completed!")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error during update check: {str(e)}")
-
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /status command - show user's current settings and next update time."""
     user_id = update.effective_user.id
@@ -634,38 +619,20 @@ def main():
     application.add_handler(CommandHandler("set_interval", set_interval))
     application.add_handler(CommandHandler("news", news))
     application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("check_updates", check_updates))
     application.add_handler(CommandHandler("query", query))
     
     # Start periodic task
-    try:
-        job_queue = application.job_queue
-        if job_queue:
-            job_queue.run_repeating(
-                check_and_send_updates,
-                interval=300,  # Check every 5 minutes
-                first=10  # Start after 10 seconds
-            )
-            print("Scheduled news updates enabled (checking every 5 minutes)")
-        else:
-            print("Warning: JobQueue not available. Scheduled news updates disabled.")
-            print("Install with: pip install 'python-telegram-bot[job-queue]'")
-    except Exception as e:
-        print(f"Warning: Could not set up scheduled updates: {e}")
-        print("Manual /news command will still work.")
+    job_queue = application.job_queue
+    if job_queue:
+        job_queue.run_repeating(
+            check_and_send_updates,
+            interval=300,  # Check every 5 minutes
+            first=10  # Start after 10 seconds
+        )
     
     print("Bot is starting...")
-    
-    # Run bot with error handling for conflicts
-    try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-    except Exception as e:
-        if "Conflict" in str(e):
-            print("Error: Another bot instance is already running!")
-            print("Please stop the other instance before starting this one.")
-        else:
-            print(f"Bot error: {e}")
-        raise
+    # Run bot
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
