@@ -46,7 +46,7 @@ MODEL_NAME=x-ai/grok-4.1-fast:free  # optional override, defaults to Grok 4.1 Fa
 
 All these models are available for free on OpenRouter:
 
-- **Grok 2 1212** (`x-ai/grok-4.1-fast`) - Default, fast and capable
+- **Grok 4.1 Fast** (`x-ai/grok-4.1-fast`) - Default, fast and capable
 - **DeepSeek R1** (`deepseek/deepseek-r1`) - Excellent reasoning capabilities  
 - **Llama 3.1 70B** (`meta-llama/llama-3.1-70b-instruct`) - Strong general performance
 
