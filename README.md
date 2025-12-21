@@ -4,10 +4,10 @@ A Telegram bot that delivers financial news about stocks and cryptocurrencies us
 
 ## Features
 
-- 🔍 **Web Search**: Integrates with Tavily API for real-time financial news search
-- 🧠 **LLM Q&A**: `/query` command uses AI models via OpenRouter to answer questions with cited sources
-- ⏰ **Customizable Intervals**: Set news update frequency and preferred delivery time
-- 📈 **Financial Focus**: Specialized in stock market and cryptocurrency news with diversified categories (Bitcoin, other crypto, stocks, global markets)
+- **Web Search**: Integrates with Tavily API for real-time financial news search
+- **LLM Q&A**: `/query` command uses AI models via OpenRouter to answer questions with cited sources
+- **Customizable Intervals**: Set news update frequency and preferred delivery time
+- **Financial Focus**: Specialized in stock market and cryptocurrency news with diversified categories (Bitcoin, other crypto, stocks, global markets)
 
 ## Prerequisites
 
