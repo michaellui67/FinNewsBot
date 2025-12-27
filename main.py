@@ -15,7 +15,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "x-ai/grok-4.1-fast:free")
+MODEL_NAME = "meta-llama/llama-3.3-70b-instruct:free"
 TAVILY_API_URL = "https://api.tavily.com/search"
 
 # User data storage (SQLite database)

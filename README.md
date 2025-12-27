@@ -39,18 +39,7 @@ cp .env.example .env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TAVILY_API_KEY=your_tavily_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here
-MODEL_NAME=x-ai/grok-4.1-fast:free  # optional override, defaults to Grok 4.1 Fast (free)
 ```
-
-## Recommended Free Models
-
-All these models are available for free on OpenRouter:
-
-- **Grok 4.1 Fast** (`x-ai/grok-4.1-fast`) - Default, fast and capable
-- **DeepSeek R1** (`deepseek/deepseek-r1`) - Excellent reasoning capabilities  
-- **Llama 3.1 70B** (`meta-llama/llama-3.1-70b-instruct`) - Strong general performance
-
-You can change the model by setting `MODEL_NAME` in your `.env` file.
 
 ## Usage
 
@@ -120,9 +109,7 @@ Adjust those query strings if you want different coverage.
 
 The `/query` command uses OpenRouter API:
 
-- `MODEL_NAME` defaults to `x-ai/grok-4.1-fast:free` (Grok 4.1 Fast)
 - `OPENROUTER_API_KEY` is required for API access
-- All recommended models (Grok 4.1 Fast, DeepSeek R1T2, Llama 3) are free on OpenRouter
 - Responses cite the numbered Tavily sources (e.g., `[1]`)
 
 ## Data Storage
