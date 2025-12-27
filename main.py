@@ -309,11 +309,21 @@ async def fetch_tavily_sources(query: str, max_results: int = 5) -> List[Dict]:
 
 async def clean_tavily_content(title: str, content: str) -> Tuple[str, str]:
     """Clean tavily search result to be readable by user."""
-    prompt = f"""Summarize this:
+    prompt = f"""Summarize this search result from Tavily:
                     {title}
                     {content}"""
-    response = await run_llm(prompt)
-    return response
+    
+    try:
+        response = await run_llm(prompt)
+        return title, response
+        
+    except Exception as e:
+        print(f"Error cleaning content with LLM: {e}")
+        # Simple fallback cleaning
+        clean_title = title.split('|')[0].strip() if '|' in title else title
+        clean_title = clean_title.strip('"\'""''')
+        clean_content = content[:200] + "..." if len(content) > 200 else content
+        return clean_title, clean_content
 
 async def run_llm(prompt: str) -> str:
     """Call OpenRouter API with the configured model."""
