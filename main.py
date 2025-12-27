@@ -47,20 +47,26 @@ def get_user_interval(user_id: int) -> int:
 
 def set_user_interval(user_id: int, interval_seconds: int, send_time: Optional[str] = None):
     """Set user's news interval and optional preferred send time."""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    # Set last_sent to a time in the past to trigger immediate first news
-    past_time = datetime.now() - timedelta(seconds=interval_seconds + 1)
-    last_sent = past_time.isoformat()
-    
-    cursor.execute('''
-        INSERT OR REPLACE INTO user_settings (user_id, interval_seconds, last_sent, send_time)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, interval_seconds, last_sent, send_time))
-    
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        # Set last_sent to a time in the past to trigger immediate first news
+        past_time = datetime.now() - timedelta(seconds=interval_seconds + 1)
+        last_sent = past_time.isoformat()
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO user_settings (user_id, interval_seconds, last_sent, send_time)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, interval_seconds, last_sent, send_time))
+        
+        conn.commit()
+        conn.close()
+        print(f"Successfully saved interval for user {user_id}: {interval_seconds}s, send_time: {send_time}")
+        return True
+    except Exception as e:
+        print(f"Error saving user interval: {e}")
+        return False
 
 def get_user_data(user_id: int) -> Dict:
     """Get all user data."""
@@ -261,7 +267,15 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    set_user_interval(user_id, interval_seconds, send_time)
+    # Try to save the interval
+    success = set_user_interval(user_id, interval_seconds, send_time)
+    
+    if not success:
+        await update.message.reply_text(
+            "Sorry, there was an error saving your settings. Please try again.\n"
+            "If the problem persists, contact support."
+        )
+        return
     
     # Format interval for display
     if interval_seconds < 3600:
@@ -274,10 +288,35 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display = f"{interval_seconds // 604800} week(s)"
     
     time_notice = f" at {send_time}" if send_time else ""
-    await update.message.reply_text(
-        f"Interval set to {display}{time_notice}!\n\n"
-        f"You will receive financial news updates every {display}{time_notice}."
+    
+    # Calculate next update time for confirmation
+    current_time = datetime.now()
+    if send_time:
+        # If specific time is set, calculate next occurrence
+        next_update = align_to_send_time(current_time, send_time)
+        next_update_str = next_update.strftime('%Y-%m-%d %H:%M')
+    else:
+        # If no specific time, next update is after the interval
+        next_update = current_time + timedelta(seconds=interval_seconds)
+        if interval_seconds < 3600:
+            next_update_str = f"in {interval_seconds // 60} minutes"
+        elif interval_seconds < 86400:
+            next_update_str = f"in {interval_seconds // 3600} hours"
+        else:
+            next_update_str = next_update.strftime('%Y-%m-%d %H:%M')
+    
+    confirmation_message = (
+        f"News interval successfully configured!\n\n"
+        f"Frequency: Every {display}{time_notice}\n"
+        f"Next update: {next_update_str}\n"
+        f"Content: Financial news covering economy, stocks, crypto, forex, and precious metals\n\n"
+        f"You can:\n"
+        f"• Use /news for immediate update\n"
+        f"• Use /status to check your settings\n"
+        f"• Use /set_interval again to change settings"
     )
+    
+    await update.message.reply_text(confirmation_message)
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /news command - send immediate news update."""
