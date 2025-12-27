@@ -1,5 +1,5 @@
 import os
-import json
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
 from dotenv import load_dotenv
@@ -18,37 +18,92 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "x-ai/grok-4.1-fast:free")
 TAVILY_API_URL = "https://api.tavily.com/search"
 
-# User data storage (in production, use a database)
-USER_DATA_FILE = "user_data.json"
+# User data storage (SQLite database)
+DATABASE_FILE = "user_data.db"
 
-def load_user_data() -> Dict:
-    """Load user data from JSON file."""
-    if os.path.exists(USER_DATA_FILE):
-        with open(USER_DATA_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_user_data(data: Dict):
-    """Save user data to JSON file."""
-    with open(USER_DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+def init_database():
+    """Initialize SQLite database with user_settings table."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            interval_seconds INTEGER,
+            last_sent TEXT,
+            send_time TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
 def get_user_interval(user_id: int) -> int:
     """Get user's news interval in seconds."""
-    data = load_user_data()
-    return data.get(str(user_id), {}).get("interval_seconds", None)
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT interval_seconds FROM user_settings WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
 
 def set_user_interval(user_id: int, interval_seconds: int, send_time: Optional[str] = None):
     """Set user's news interval and optional preferred send time."""
-    data = load_user_data()
-    if str(user_id) not in data:
-        data[str(user_id)] = {}
-    data[str(user_id)]["interval_seconds"] = interval_seconds
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    
     # Set last_sent to a time in the past to trigger immediate first news
     past_time = datetime.now() - timedelta(seconds=interval_seconds + 1)
-    data[str(user_id)]["last_sent"] = past_time.isoformat()
-    data[str(user_id)]["send_time"] = send_time
-    save_user_data(data)
+    last_sent = past_time.isoformat()
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO user_settings (user_id, interval_seconds, last_sent, send_time)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, interval_seconds, last_sent, send_time))
+    
+    conn.commit()
+    conn.close()
+
+def get_user_data(user_id: int) -> Dict:
+    """Get all user data."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT interval_seconds, last_sent, send_time FROM user_settings WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            "interval_seconds": result[0],
+            "last_sent": result[1],
+            "send_time": result[2]
+        }
+    return {}
+
+def update_last_sent(user_id: int, last_sent: str):
+    """Update the last_sent timestamp for a user."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE user_settings SET last_sent = ? WHERE user_id = ?', (last_sent, user_id))
+    conn.commit()
+    conn.close()
+
+def get_all_users() -> List[Tuple[int, Dict]]:
+    """Get all users and their settings."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, interval_seconds, last_sent, send_time FROM user_settings')
+    results = cursor.fetchall()
+    conn.close()
+    
+    users = []
+    for row in results:
+        user_data = {
+            "interval_seconds": row[1],
+            "last_sent": row[2],
+            "send_time": row[3]
+        }
+        users.append((row[0], user_data))
+    
+    return users
 
 def parse_time_input(time_input: str) -> Optional[str]:
     """Parse user provided time strings such as 7AM, 7:00, or 19:30."""
@@ -120,8 +175,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.first_name
     
     welcome_message = (
-        f"Hello {username}! 👋\n\n"
-        f"Welcome to FinNewsBot! 📈💰\n\n"
+        f"Hello {username}! \n\n"
+        f"Welcome to FinNewsBot! \n\n"
         f"I'm here to keep you updated with the latest financial news about stocks and cryptocurrencies.\n\n"
         f"To get started, please set how frequently you'd like to receive news updates using the command:\n"
         f"/set_interval\n\n"
@@ -220,7 +275,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     time_notice = f" at {send_time}" if send_time else ""
     await update.message.reply_text(
-        f"✅ Interval set to {display}{time_notice}!\n\n"
+        f"Interval set to {display}{time_notice}!\n\n"
         f"You will receive financial news updates every {display}{time_notice}."
     )
 
@@ -229,7 +284,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
     # Optional acknowledgement to show the bot is working
-    await update.message.reply_text("Fetching the latest financial news for you... ⏳")
+    await update.message.reply_text("Fetching the latest financial news for you...")
     
     await send_financial_news(chat_id, context)
 
@@ -253,63 +308,12 @@ async def fetch_tavily_sources(query: str, max_results: int = 5) -> List[Dict]:
         return [{"title": "Error fetching sources", "url": "", "content": str(e)}]
 
 async def clean_tavily_content(title: str, content: str) -> Tuple[str, str]:
-    """Use LLM to clean Tavily search results by removing navigation, ads, and clutter."""
+    """Clean tavily search result to be readable by user."""
     prompt = f"""Summarize this:
                     {title}
                     {content}"""
-    
-    try:
-        response = await run_llm(prompt)
-        lines = [line.strip() for line in response.split('\n') if line.strip()]
-        
-        if len(lines) >= 2:
-            cleaned_title = lines[0]
-            cleaned_content = lines[1]
-        elif len(lines) == 1:
-            # If only one line, try to split by common patterns
-            if '|' in title:
-                cleaned_title = title.split('|')[0].strip()
-            else:
-                cleaned_title = title
-            cleaned_content = lines[0]
-        else:
-            # Fallback
-            cleaned_title = title
-            cleaned_content = content
-        
-        # Remove quotation marks from title
-        cleaned_title = cleaned_title.strip('"\'""''')
-        
-        # Remove any remaining labels that might have slipped through
-        if cleaned_title.lower().startswith('title:'):
-            cleaned_title = cleaned_title[6:].strip()
-        if cleaned_content.lower().startswith('content:'):
-            cleaned_content = cleaned_content[8:].strip()
-        
-        # Fallback if cleaning resulted in empty content
-        if not cleaned_title or len(cleaned_title) < 5:
-            cleaned_title = title.split('|')[0].strip() if '|' in title else title
-            cleaned_title = cleaned_title.strip('"\'""''')
-        
-        if not cleaned_content or len(cleaned_content) < 20:
-            # Simple fallback: take first meaningful sentence from content
-            sentences = content.split('.')
-            for sentence in sentences:
-                if len(sentence.strip()) > 30:
-                    cleaned_content = sentence.strip() + '.'
-                    break
-            if not cleaned_content:
-                cleaned_content = content[:200] + "..." if len(content) > 200 else content
-        
-        return cleaned_title, cleaned_content
-        
-    except Exception as e:
-        print(f"Error cleaning content with LLM: {e}")
-        # Simple fallback cleaning
-        clean_title = title.split('|')[0].strip() if '|' in title else title
-        clean_title = clean_title.strip('"\'""''')
-        clean_content = content[:200] + "..." if len(content) > 200 else content
-        return clean_title, clean_content
+    response = await run_llm(prompt)
+    return response
 
 async def run_llm(prompt: str) -> str:
     """Call OpenRouter API with the configured model."""
@@ -386,13 +390,13 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                 clean_title, clean_content = await clean_tavily_content(raw_title, raw_content)
                 
                 sections.append(
-                    f"📊 {label}\n"
+                    f"{label}\n"
                     f"{clean_title}\n"
                     f"{clean_content}\n"
-                    f"🔗 {url}\n"
+                    f"{url}\n"
                 )
             else:
-                sections.append(f"📊 {label}\nNo news found for this category right now.\n")
+                sections.append(f"{label}\nNo news found for this category right now.\n")
         
         # Format message
         numbered_sections = []
@@ -400,7 +404,7 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             numbered_sections.append(f"{idx}. {sec}")
 
         message = (
-            "📈 Financial News Update 📈\n\n"
+            "Financial News Update\n\n"
             + "\n".join(numbered_sections)
         )
         
@@ -414,10 +418,7 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text=message)
         
         # Update last sent time
-        data = load_user_data()
-        if str(chat_id) in data:
-            data[str(chat_id)]["last_sent"] = datetime.now().isoformat()
-            save_user_data(data)
+        update_last_sent(chat_id, datetime.now().isoformat())
     
     except Exception as e:
         error_msg = f"Error sending news: {str(e)}"
@@ -429,12 +430,11 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /status command - show user's current settings and next update time."""
     user_id = update.effective_user.id
-    data = load_user_data()
-    user_data = data.get(str(user_id), {})
+    user_data = get_user_data(user_id)
     
     interval_seconds = user_data.get("interval_seconds")
     if not interval_seconds:
-        await update.message.reply_text("❌ No interval set. Use /set_interval to configure news updates.")
+        await update.message.reply_text("No interval set. Use /set_interval to configure news updates.")
         return
     
     last_sent_str = user_data.get("last_sent")
@@ -468,25 +468,25 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_notice = f" at {send_time_str}" if send_time_str else ""
     
     if current_time >= due_time:
-        next_update = "⏰ Next update: Due now (will be sent within 5 minutes)"
+        next_update = "Next update: Due now (will be sent within 5 minutes)"
     else:
         time_diff = due_time - current_time
         if time_diff.total_seconds() < 3600:
-            next_update = f"⏰ Next update: In {int(time_diff.total_seconds() // 60)} minutes"
+            next_update = f"Next update: In {int(time_diff.total_seconds() // 60)} minutes"
         elif time_diff.total_seconds() < 86400:
-            next_update = f"⏰ Next update: In {int(time_diff.total_seconds() // 3600)} hours"
+            next_update = f"Next update: In {int(time_diff.total_seconds() // 3600)} hours"
         else:
-            next_update = f"⏰ Next update: {due_time.strftime('%Y-%m-%d %H:%M')}"
+            next_update = f"Next update: {due_time.strftime('%Y-%m-%d %H:%M')}"
     
     last_sent_display = "Never" if not last_sent_str else datetime.fromisoformat(last_sent_str).strftime('%Y-%m-%d %H:%M')
     
     status_message = (
-        f"📊 Your News Settings\n\n"
-        f"📅 Interval: Every {display}{time_notice}\n"
-        f"📤 Last sent: {last_sent_display}\n"
+        f"Your News Settings\n\n"
+        f"Interval: Every {display}{time_notice}\n"
+        f"Last sent: {last_sent_display}\n"
         f"{next_update}\n\n"
-        f"💡 Use /news for immediate update\n"
-        f"⚙️ Use /set_interval to change settings"
+        f"Use /news for immediate update\n"
+        f"Use /set_interval to change settings"
     )
     
     await update.message.reply_text(status_message)
@@ -498,7 +498,7 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     question = " ".join(context.args).strip()
     chat_id = update.effective_chat.id
-    await update.message.reply_text("🔍 Searching for up-to-date sources...")
+    await update.message.reply_text("Searching for up-to-date sources...")
 
     sources = await fetch_tavily_sources(question, max_results=5)
     if not sources:
@@ -519,7 +519,8 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         citations.append(f"{idx}. {clean_title} - {url}")
 
     prompt = (
-        "You are FinNewsBot, an AI analyst. Use the numbered sources below to answer the user question. "
+        "You are FinNewsBot, a financial advisor. You only answer financial question, reject any unrelated question"
+        "Use the numbered sources below to answer the user question. "
         "Cite sources inline with their bracket numbers (e.g., [1]). "
         "Only use information from the sources. If the answer isn't there, say you couldn't find it.\n\n"
         f"Question: {question}\n\n"
@@ -535,23 +536,23 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = f"LLM processing error: {str(e)}"
 
     message = (
-        f"🧠 Answer\n{answer}\n\n"
-        "📚 Sources\n" + "\n".join(citations)
+        f"Answer\n{answer}\n\n"
+        "Sources\n" + "\n".join(citations)
     )
 
     await context.bot.send_message(chat_id=chat_id, text=message)
 
 async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
     """Check all users and send updates if interval has passed."""
-    data = load_user_data()
+    users = get_all_users()
     current_time = datetime.now()
     
     print(f"Checking updates at {current_time}")  # Debug log
     
-    for user_id_str, user_data in data.items():
+    for user_id, user_data in users:
         interval_seconds = user_data.get("interval_seconds")
         if not interval_seconds:
-            print(f"User {user_id_str}: No interval set, skipping")
+            print(f"User {user_id}: No interval set, skipping")
             continue
         
         last_sent_str = user_data.get("last_sent")
@@ -562,29 +563,29 @@ async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
                 last_sent = datetime.fromisoformat(last_sent_str)
                 base_time = last_sent + timedelta(seconds=interval_seconds)
             except ValueError:
-                print(f"User {user_id_str}: Invalid last_sent format, using current time")
+                print(f"User {user_id}: Invalid last_sent format, using current time")
                 base_time = current_time - timedelta(seconds=interval_seconds + 1)
         else:
             # If no last_sent, send immediately
-            print(f"User {user_id_str}: No last_sent, scheduling immediate send")
+            print(f"User {user_id}: No last_sent, scheduling immediate send")
             base_time = current_time - timedelta(seconds=interval_seconds + 1)
         
         due_time = base_time
         if send_time_str:
             due_time = align_to_send_time(base_time, send_time_str)
         
-        print(f"User {user_id_str}: Current={current_time}, Due={due_time}, Should send={current_time >= due_time}")
+        print(f"User {user_id}: Current={current_time}, Due={due_time}, Should send={current_time >= due_time}")
         
         if current_time < due_time:
             continue
         
         # Send update
         try:
-            print(f"Sending news to user {user_id_str}")
-            await send_financial_news(int(user_id_str), context)
-            print(f"Successfully sent news to user {user_id_str}")
+            print(f"Sending news to user {user_id}")
+            await send_financial_news(user_id, context)
+            print(f"Successfully sent news to user {user_id}")
         except Exception as e:
-            print(f"Error sending update to user {user_id_str}: {e}")
+            print(f"Error sending update to user {user_id}: {e}")
 
 def main():
     """Start the bot."""
@@ -595,8 +596,12 @@ def main():
     if not OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY not found in environment variables")
     
+    # Initialize database
+    init_database()
+    
     print("Bot configuration loaded successfully!")
     print(f"Using Tavily for news search and {MODEL_NAME} via OpenRouter for LLM answers.")
+    print("SQLite database initialized for user data storage.")
     
     # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
