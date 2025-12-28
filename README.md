@@ -54,17 +54,17 @@ python main.py
 
 3. Send `/start` to begin
 
-4. Set your news schedule with timezone:
+4. Set your news schedule (timezone is mandatory):
 ```
-/set_interval daily 9:00 UTC+7
-/set_interval weekly 15:30 Asia/Bangkok
-/set_interval 12h EST
+/set_interval daily UTC+7
+/set_interval 8h 9:00 Asia/Bangkok
+/set_interval weekly 15:30 EST
 ```
 
 ## Commands
 
 - `/start` - Start the bot and see welcome message
-- `/set_interval <frequency> [time] [timezone]` - Set update frequency, time, and timezone
+- `/set_interval <frequency> [time] <timezone>` - Set update frequency, time, and timezone (timezone required)
 - `/news` - Get immediate news update
 - `/status` - Check your current settings and next update time
 - `/query <question>` - Ask financial questions with AI-powered answers
@@ -72,31 +72,31 @@ python main.py
 
 ## Interval Options
 
-- **Frequency**: `3h`, `6h`, `12h`, `daily`, `3d`, `weekly`
+- **Frequency**: `1h`, `5h`, `24h`, `daily`, `2d`, `weekly`, `3 weeks` (flexible numbers supported)
 - **Time**: `9:00`, `15:30`, `7AM`, `3PM` (optional)
-- **Timezone**: `UTC+7`, `Asia/Bangkok`, `EST`, `PST`, etc. (optional)
+- **Timezone**: `UTC+7`, `Asia/Bangkok`, `EST`, `PST`, etc. (mandatory)
 
 ## Examples
 
-### Basic Setup
+### Basic Setup (timezone required)
 ```
-/set_interval daily
-/set_interval 12h
-/set_interval weekly
+/set_interval daily UTC+7
+/set_interval 12h EST
+/set_interval weekly Asia/Bangkok
 ```
 
 ### With Specific Time
 ```
-/set_interval daily 9:00
-/set_interval weekly 15:30
-/set_interval 12h 8:00
-```
-
-### With Timezone
-```
 /set_interval daily 9:00 UTC+7
 /set_interval weekly 15:30 Asia/Bangkok
-/set_interval 12h EST
+/set_interval 8h 8:00 EST
+```
+
+### Flexible Intervals
+```
+/set_interval 5h UTC+7
+/set_interval 3 days 9:00 Asia/Bangkok
+/set_interval 2 weeks 15:30 EST
 ```
 
 ## Timezone Support
@@ -110,7 +110,7 @@ python main.py
 - All times are stored in UTC internally
 - Display times are converted to your timezone
 - Scheduled deliveries respect your local time
-- Default timezone is UTC if not set
+- Timezone must be specified when setting intervals
 
 ## News Categories
 
