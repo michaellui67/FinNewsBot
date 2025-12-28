@@ -488,55 +488,6 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(confirmation_message)
-        )
-        return
-    
-    # Format interval for display
-    if interval_seconds < 3600:
-        display = f"{interval_seconds // 60} minutes"
-    elif interval_seconds < 86400:
-        display = f"{interval_seconds // 3600} hours"
-    elif interval_seconds < 604800:
-        display = f"{interval_seconds // 86400} day(s)"
-    else:
-        display = f"{interval_seconds // 604800} week(s)"
-    
-    time_notice = f" at {send_time}" if send_time else ""
-    
-    # Calculate next update time for confirmation using user's timezone
-    current_time = datetime.utcnow()
-    user_current_time = get_user_time(user_id, current_time)
-    user_tz = get_user_timezone(user_id)
-    
-    if send_time:
-        # If specific time is set, calculate next occurrence in user's timezone
-        next_update_utc = align_to_send_time_with_tz(current_time, send_time, user_id)
-        next_update_user_tz = get_user_time(user_id, next_update_utc)
-        next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
-    else:
-        # If no specific time, next update is after the interval
-        next_update_user_tz = user_current_time + timedelta(seconds=interval_seconds)
-        if interval_seconds < 3600:
-            next_update_str = f"in {interval_seconds // 60} minutes"
-        elif interval_seconds < 86400:
-            next_update_str = f"in {interval_seconds // 3600} hours"
-        else:
-            next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
-    
-    confirmation_message = (
-        f"News interval successfully configured!\n\n"
-        f"Frequency: Every {display}{time_notice}\n"
-        f"Current time: {user_current_time.strftime('%Y-%m-%d %H:%M:%S ')}{user_tz}\n"
-        f"Next update: {next_update_str}\n"
-        f"Content: Financial news covering economy, stocks, crypto, forex, and precious metals\n\n"
-        f"You can:\n"
-        f"• Use /news for immediate update\n"
-        f"• Use /status to check your settings\n"
-        f"• Use /timezone to change your timezone\n"
-        f"• Use /set_interval again to change settings"
-    )
-    
-    await update.message.reply_text(confirmation_message)
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /news command - send immediate news update."""
