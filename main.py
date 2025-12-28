@@ -460,7 +460,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_message)
 
-async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):is there a library to detect timezone automatically and use it when the user input no timezone?
+async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /set_interval with optional timezone setting."""
     user_id = update.effective_user.id
     
