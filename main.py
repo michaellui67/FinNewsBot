@@ -54,6 +54,26 @@ def auto_detect_timezone(user_id: int, update: Update) -> str:
     current_tz = get_user_timezone(user_id)
     return current_tz
 
+def get_user_timezone_display(user_id: int) -> str:
+    """Get user's timezone in a user-friendly display format."""
+    tz_str = get_user_timezone(user_id)
+    
+    # Convert Etc/GMT format back to user-friendly format
+    if tz_str.startswith('Etc/GMT'):
+        try:
+            offset = int(tz_str.replace('Etc/GMT', ''))
+            # Etc/GMT signs are reversed, so flip them back
+            if offset == 0:
+                return 'UTC'
+            elif offset > 0:
+                return f'UTC-{offset}'
+            else:
+                return f'UTC+{abs(offset)}'
+        except:
+            return tz_str
+    
+    return tz_str
+
 def get_user_timezone(user_id: int) -> str:
     """Get user's timezone."""
     conn = sqlite3.connect(DATABASE_FILE)
@@ -448,6 +468,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Show confirmation
     user_tz = get_user_timezone(user_id)
+    user_tz_display = get_user_timezone_display(user_id)
     user_current_time = get_user_time(user_id)
     
     # Format interval for display
@@ -467,7 +488,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if send_time:
         next_update_utc = align_to_send_time_with_tz(current_time_utc, send_time, user_id)
         next_update_user_tz = get_user_time(user_id, next_update_utc)
-        next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
+        next_update_str = f"{next_update_user_tz.strftime('%Y-%m-%d %H:%M')} {user_tz_display}"
     else:
         next_update_user_tz = user_current_time + timedelta(seconds=interval_seconds)
         if interval_seconds < 3600:
@@ -475,12 +496,12 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif interval_seconds < 86400:
             next_update_str = f"in {interval_seconds // 3600} hours"
         else:
-            next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
+            next_update_str = f"{next_update_user_tz.strftime('%Y-%m-%d %H:%M')} {user_tz_display}"
     
     confirmation_message = (
         f"News updates configured successfully!\n\n"
         f"Frequency: Every {display}{time_notice}\n"
-        f"Current time: {user_current_time.strftime('%Y-%m-%d %H:%M:%S ')}{user_tz}\n"
+        f"Current time: {user_current_time.strftime('%Y-%m-%d %H:%M:%S')} {user_tz_display}\n"
         f"Next update: {next_update_str}\n\n"
         f"Commands:\n"
         f"• /news - Get immediate update\n"
@@ -656,6 +677,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     send_time_str = user_data.get("send_time")
     user_tz = get_user_timezone(user_id)
+    user_tz_display = get_user_timezone_display(user_id)
     
     current_time_utc = datetime.utcnow()
     current_time_user = get_user_time(user_id, current_time_utc)
@@ -691,12 +713,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif time_diff.total_seconds() < 86400:
             next_update = f"Next update: In {int(time_diff.total_seconds() // 3600)} hours"
         else:
-            next_update = f"Next update: {due_time_user.strftime('%Y-%m-%d %H:%M')}"
+            next_update = f"Next update: {due_time_user.strftime('%Y-%m-%d %H:%M')} {user_tz_display}"
     
     status_message = (
         f"Your News Settings\n\n"
         f"Interval: Every {display}{time_notice}\n"
-        f"Current time: {current_time_user.strftime('%Y-%m-%d %H:%M:%S ')}{user_tz}\n"
+        f"Current time: {current_time_user.strftime('%Y-%m-%d %H:%M:%S')} {user_tz_display}\n"
         f"{next_update}\n\n"
         f"Use /news for immediate update\n"
         f"Use /set_interval to change settings"
@@ -758,7 +780,7 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def timezone_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /timezone command - view or set timezone."""
     user_id = update.effective_user.id
-    current_tz = get_user_timezone(user_id)
+    current_tz_display = get_user_timezone_display(user_id)
     user_time = get_user_time(user_id)
     
     if context.args:
@@ -777,16 +799,17 @@ async def timezone_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success = set_user_timezone(user_id, parsed_tz)
         if success:
             new_user_time = get_user_time(user_id)
+            new_tz_display = get_user_timezone_display(user_id)
             await update.message.reply_text(
                 f"Timezone updated!\n"
-                f"Current time: {new_user_time.strftime('%Y-%m-%d %H:%M:%S ')}{parsed_tz}"
+                f"Current time: {new_user_time.strftime('%Y-%m-%d %H:%M:%S')} {new_tz_display}"
             )
         else:
             await update.message.reply_text("Error setting timezone. Please try again.")
     else:
         # Show current timezone
         await update.message.reply_text(
-            f"Current time: {user_time.strftime('%Y-%m-%d %H:%M:%S ')}{current_tz}\n\n"
+            f"Current time: {user_time.strftime('%Y-%m-%d %H:%M:%S')} {current_tz_display}\n\n"
             f"To change timezone: /timezone UTC+7\n"
             f"Or use: /set_interval daily 9:00 Asia/Bangkok"
         )
