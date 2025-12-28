@@ -7,6 +7,8 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import httpx
 from openai import OpenAI
+import pytz
+import re
 
 # Load environment variables
 load_dotenv()
@@ -29,15 +31,166 @@ def init_database():
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id INTEGER PRIMARY KEY,
             interval_seconds INTEGER,
-            last_sent TEXT,
-            send_time TEXT
+            send_time TEXT,
+            timezone TEXT DEFAULT 'UTC'
         )
     ''')
+    
+    # Add timezone column to existing tables if it doesn't exist
+    try:
+        cursor.execute('ALTER TABLE user_settings ADD COLUMN timezone TEXT DEFAULT "UTC"')
+    except sqlite3.OperationalError:
+        # Column already exists
+        pass
+    
     conn.commit()
     conn.close()
 
+def auto_detect_timezone(user_id: int, update: Update) -> str:
+    """
+    Return user's current timezone or default to UTC.
+    No automatic detection - just ensures user has a timezone set.
+    """
+    current_tz = get_user_timezone(user_id)
+    return current_tz
+
+def get_user_timezone(user_id: int) -> str:
+    """Get user's timezone."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT timezone FROM user_settings WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 'UTC'
+
+def set_user_timezone(user_id: int, timezone_str: str) -> bool:
+    """Set user's timezone."""
+    try:
+        # Validate timezone using pytz
+        pytz.timezone(timezone_str)
+        
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO user_settings (user_id, timezone) VALUES (?, ?)
+        ''', (user_id, timezone_str))
+        cursor.execute('''
+            UPDATE user_settings SET timezone = ? WHERE user_id = ?
+        ''', (timezone_str, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    except pytz.exceptions.UnknownTimeZoneError:
+        print(f"Invalid timezone: {timezone_str}")
+        return False
+    except Exception as e:
+        print(f"Error setting timezone: {e}")
+        return False
+
+def parse_timezone_input(tz_input: str) -> Optional[str]:
+    """Parse timezone input from user using pytz."""
+    tz_input = tz_input.strip()
+    
+    # Common timezone mappings
+    timezone_aliases = {
+        'utc': 'UTC',
+        'gmt': 'GMT',
+        'est': 'US/Eastern',
+        'pst': 'US/Pacific',
+        'cst': 'US/Central',
+        'mst': 'US/Mountain',
+        'jst': 'Asia/Tokyo',
+        'cet': 'Europe/Berlin',
+        'ist': 'Asia/Kolkata',
+        'bst': 'Europe/London',
+        'aest': 'Australia/Sydney',
+    }
+    
+    # Check if it's a common alias
+    if tz_input.lower() in timezone_aliases:
+        return timezone_aliases[tz_input.lower()]
+    
+    # Check if it's a UTC offset like +7, -5, UTC+7, GMT-5
+    utc_offset_pattern = r'^(UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?$'
+    match = re.match(utc_offset_pattern, tz_input.upper())
+    if match:
+        sign = match.group(2)
+        hours = int(match.group(3))
+        minutes = int(match.group(4)) if match.group(4) else 0
+        
+        if hours > 14 or (hours == 14 and minutes > 0):
+            return None  # Invalid offset
+        
+        # Use pytz's fixed offset timezone
+        from datetime import timezone, timedelta
+        offset_seconds = (hours * 3600 + minutes * 60)
+        if sign == '-':
+            offset_seconds = -offset_seconds
+        
+        # For simple hour offsets, use Etc/GMT format (note: signs are reversed in Etc/GMT)
+        if minutes == 0:
+            return f"Etc/GMT{-hours if sign == '+' else hours:+d}"
+        else:
+            # For non-hour offsets, create a fixed offset name
+            return f"UTC{sign}{hours:02d}:{minutes:02d}"
+    
+    # Try as direct timezone name - pytz will validate it
+    try:
+        pytz.timezone(tz_input)
+        return tz_input
+    except pytz.exceptions.UnknownTimeZoneError:
+        return None
+
+def get_user_time(user_id: int, dt: Optional[datetime] = None) -> datetime:
+    """Get current time in user's timezone."""
+    if dt is None:
+        dt = datetime.utcnow()
+    
+    user_tz_str = get_user_timezone(user_id)
+    try:
+        user_tz = pytz.timezone(user_tz_str)
+        # Use pytz's localize for naive datetimes, astimezone for aware ones
+        if dt.tzinfo is None:
+            utc_dt = pytz.utc.localize(dt)
+        else:
+            utc_dt = dt
+        return utc_dt.astimezone(user_tz)
+    except pytz.exceptions.UnknownTimeZoneError:
+        # Fallback to UTC
+        return pytz.utc.localize(dt) if dt.tzinfo is None else dt
+
+def align_to_send_time_with_tz(reference: datetime, send_time_str: str, user_id: int) -> datetime:
+    """Align the reference datetime to the next occurrence of the preferred send time in user's timezone."""
+    user_tz_str = get_user_timezone(user_id)
+    try:
+        user_tz = pytz.timezone(user_tz_str)
+        
+        # Convert reference to user timezone
+        if reference.tzinfo is None:
+            reference = pytz.utc.localize(reference)
+        user_time = reference.astimezone(user_tz)
+        
+        # Parse send time
+        hour, minute = map(int, send_time_str.split(":"))
+        
+        # Create target time in user timezone using pytz's localize
+        target_date = user_time.date()
+        naive_target = datetime.combine(target_date, datetime.min.time().replace(hour=hour, minute=minute))
+        candidate = user_tz.localize(naive_target)
+        
+        if candidate <= user_time:
+            # Move to next day
+            next_day = target_date + timedelta(days=1)
+            naive_target = datetime.combine(next_day, datetime.min.time().replace(hour=hour, minute=minute))
+            candidate = user_tz.localize(naive_target)
+        
+        # Convert back to UTC for storage
+        return candidate.astimezone(pytz.utc).replace(tzinfo=None)
+    except pytz.exceptions.UnknownTimeZoneError:
+        # Fallback to original function
+        return align_to_send_time(reference, send_time_str)
+
 def get_user_interval(user_id: int) -> int:
-    """Get user's news interval in seconds."""
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
     cursor.execute('SELECT interval_seconds FROM user_settings WHERE user_id = ?', (user_id,))
@@ -51,14 +204,10 @@ def set_user_interval(user_id: int, interval_seconds: int, send_time: Optional[s
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
         
-        # Set last_sent to a time in the past to trigger immediate first news
-        past_time = datetime.now() - timedelta(seconds=interval_seconds + 1)
-        last_sent = past_time.isoformat()
-        
         cursor.execute('''
-            INSERT OR REPLACE INTO user_settings (user_id, interval_seconds, last_sent, send_time)
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, interval_seconds, last_sent, send_time))
+            INSERT OR REPLACE INTO user_settings (user_id, interval_seconds, send_time)
+            VALUES (?, ?, ?)
+        ''', (user_id, interval_seconds, send_time))
         
         conn.commit()
         conn.close()
@@ -72,31 +221,23 @@ def get_user_data(user_id: int) -> Dict:
     """Get all user data."""
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT interval_seconds, last_sent, send_time FROM user_settings WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT interval_seconds, send_time, timezone FROM user_settings WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     conn.close()
     
     if result:
         return {
             "interval_seconds": result[0],
-            "last_sent": result[1],
-            "send_time": result[2]
+            "send_time": result[1],
+            "timezone": result[2] if result[2] else 'UTC'
         }
     return {}
-
-def update_last_sent(user_id: int, last_sent: str):
-    """Update the last_sent timestamp for a user."""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    cursor.execute('UPDATE user_settings SET last_sent = ? WHERE user_id = ?', (last_sent, user_id))
-    conn.commit()
-    conn.close()
 
 def get_all_users() -> List[Tuple[int, Dict]]:
     """Get all users and their settings."""
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT user_id, interval_seconds, last_sent, send_time FROM user_settings')
+    cursor.execute('SELECT user_id, interval_seconds, send_time, timezone FROM user_settings')
     results = cursor.fetchall()
     conn.close()
     
@@ -104,8 +245,8 @@ def get_all_users() -> List[Tuple[int, Dict]]:
     for row in results:
         user_data = {
             "interval_seconds": row[1],
-            "last_sent": row[2],
-            "send_time": row[3]
+            "send_time": row[2],
+            "timezone": row[3] if row[3] else 'UTC'
         }
         users.append((row[0], user_data))
     
@@ -143,29 +284,54 @@ def parse_time_input(time_input: str) -> Optional[str]:
         return None
     return f"{hour:02d}:{minute:02d}"
 
-def extract_interval_and_time(raw_input: str) -> Tuple[str, Optional[str], Optional[str]]:
+def parse_interval_time_timezone(raw_input: str) -> Dict:
     """
-    Split the interval string and optional time component.
-    Returns tuple of (interval_string, normalized_time, error_message_if_any)
+    Parse interval, time, and timezone from user input.
+    Returns dict with interval, time, timezone, and error fields.
     """
-    interval_part = raw_input.strip()
-    if not interval_part:
-        return "", None, None
+    tokens = raw_input.strip().split()
+    if not tokens:
+        return {"interval": "", "time": None, "timezone": None, "error": "No input provided"}
     
-    tokens = interval_part.split()
-    normalized = None
-    interval_tokens = tokens[:]
-    # Try last two tokens first (e.g., "7 PM")
-    for take in (2, 1):
-        if len(tokens) > take:
-            candidate = " ".join(tokens[-take:])
-            parsed = parse_time_input(candidate)
-            if parsed:
-                interval_tokens = tokens[:-take]
-                normalized = parsed
-                break
-    interval = " ".join(interval_tokens).strip()
-    return interval, normalized, None
+    interval = tokens[0]
+    remaining_tokens = tokens[1:]
+    time_str = None
+    timezone_str = None
+    
+    # Try to identify time and timezone from remaining tokens
+    for i, token in enumerate(remaining_tokens):
+        # Check if token looks like a time (contains : or ends with AM/PM)
+        if ':' in token or token.lower().endswith(('am', 'pm')):
+            if time_str is None:
+                parsed_time = parse_time_input(token)
+                if parsed_time:
+                    time_str = parsed_time
+                    continue
+        
+        # Check if token looks like a timezone
+        if parse_timezone_input(token):
+            timezone_str = token
+            continue
+        
+        # If we haven't found time yet, try parsing as time
+        if time_str is None:
+            parsed_time = parse_time_input(token)
+            if parsed_time:
+                time_str = parsed_time
+                continue
+        
+        # Try remaining tokens as timezone (could be multi-word like "Asia/Bangkok")
+        remaining = " ".join(remaining_tokens[i:])
+        if parse_timezone_input(remaining):
+            timezone_str = remaining
+            break
+    
+    return {
+        "interval": interval,
+        "time": time_str,
+        "timezone": timezone_str,
+        "error": None
+    }
 
 def align_to_send_time(reference: datetime, send_time_str: str) -> datetime:
     """Align the reference datetime to the next occurrence of the preferred send time."""
@@ -181,65 +347,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.first_name
     
     welcome_message = (
-        f"Hello {username}! \n\n"
-        f"Welcome to FinNewsBot! \n\n"
-        f"I'm here to keep you updated with the latest financial news about stocks and cryptocurrencies.\n\n"
-        f"To get started, please set how frequently you'd like to receive news updates using the command:\n"
-        f"/set_interval\n\n"
-        f"You can choose from:\n"
-        f"• 3 hours\n"
-        f"• 6 hours\n"
-        f"• 12 hours\n"
-        f"• 1 day / daily\n"
-        f"• 3 days\n"
-        f"• 1 week / weekly\n\n"
-        f"You can optionally specify a preferred time (if not specified, updates start from current time):\n"
-        f"Examples:\n"
-        f"• /set_interval daily (starts from current time)\n"
-        f"• /set_interval 1d 7AM (daily at 7 AM)\n"
-        f"• /set_interval weekly 9:30 (weekly at 9:30)\n"
-        f"• /set_interval 12h 9:30 (every 12 hours at 9:30)\n\n"
-        f"Other commands:\n"
-        f"• /news - Get immediate news update\n"
+        f"Hello {username}!\n\n"
+        f"Welcome to FinNewsBot!\n\n"
+        f"I provide automated financial news updates covering stocks, crypto, forex, and market analysis.\n\n"
+        f"Available commands:\n"
+        f"• /news - Get news immediately\n"
         f"• /status - Check your current settings\n"
-        f"• /query <question> - Ask a financial question"
+        f"• /query <question> - Ask a financial question\n"
+        f"• /set_interval <frequency> [time] [timezone] - Set to periodically receive news\n"
     )
     
     await update.message.reply_text(welcome_message)
 
 async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /set_interval command."""
+    """Handle /set_interval command with optional timezone setting."""
     user_id = update.effective_user.id
     
     if not context.args:
+        current_tz = get_user_timezone(user_id)
+        user_time = get_user_time(user_id)
+        
         await update.message.reply_text(
-            "Please specify an interval. Available options:\n"
-            "• 3h or 3 hours\n"
-            "• 6h or 6 hours\n"
-            "• 12h or 12 hours\n"
-            "• 1d or 1 day or daily\n"
-            "• 3d or 3 days\n"
-            "• 1w or 1 week or weekly\n\n"
-            "You can optionally specify a preferred time (if not specified, updates start from current time):\n"
-            "• /set_interval 1 day 7AM\n"
-            "• /set_interval 1d 7:00\n"
-            "• /set_interval 12 hours 9:30\n\n"
-            "Examples:\n"
-            "• /set_interval daily (starts from current time)\n"
-            "• /set_interval 1d 7AM (daily at 7 AM)\n"
-            "• /set_interval weekly 9:30 (weekly at 9:30)\n"
-            "• /set_interval 12h 9:30 (every 12 hours at 9:30)"
+            f"Set your news update interval.\n\n"
+            f"Current time: {user_time.strftime('%Y-%m-%d %H:%M:%S ')}{current_tz}\n\n"
+            f"Usage: /set_interval <frequency> [time] [timezone]\n\n"
+            f"Examples:\n"
+            f"• /set_interval 3h (will automatically use current time and timezone)\n"
+            f"• /set_interval weekly 3PM (will automatically use current timezone)\n"
+            f"• /set_interval daily 15:00 UTC+7\n"
         )
         return
     
-    # Parse interval and optional send time
-    raw_interval_input = " ".join(context.args)
-    interval_str, send_time, error = extract_interval_and_time(raw_interval_input)
-    if error:
-        await update.message.reply_text(error)
-        return
-    interval_seconds = None
+    # Parse the full input: interval, time, and timezone
+    raw_input = " ".join(context.args)
+    parsed_result = parse_interval_time_timezone(raw_input)
     
+    if parsed_result["error"]:
+        await update.message.reply_text(parsed_result["error"])
+        return
+    
+    interval_str = parsed_result["interval"]
+    send_time = parsed_result["time"]
+    timezone_input = parsed_result["timezone"]
+    
+    # Validate interval
     interval_map = {
         "3h": 3 * 3600, "3 hours": 3 * 3600, "3hour": 3 * 3600,
         "6h": 6 * 3600, "6 hours": 6 * 3600, "6hour": 6 * 3600,
@@ -250,30 +401,93 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     interval_seconds = interval_map.get(interval_str.lower())
-    
     if interval_seconds is None:
         await update.message.reply_text(
-            "Invalid interval. Please use one of:\n"
-            "• 3h or 3 hours\n"
-            "• 6h or 6 hours\n"
-            "• 12h or 12 hours\n"
-            "• daily or 1d or 1 day\n"
-            "• 3d or 3 days\n"
-            "• weekly or 1w or 1 week\n\n"
-            "You can optionally add a specific time (if not specified, updates start from current time):\n"
-            "• /set_interval 1 day 7AM\n"
-            "• /set_interval 1d 7:00\n"
-            "• /set_interval 12h 9:30"
+            f"Invalid interval: {interval_str}\n\n"
+            f"Example on how to set intervals:\n"
+            f"• /set_interval 3h (will automatically use current time and timezone)\n"
+            f"• /set_interval weekly 3PM (will automatically use current timezone)\n"
+            f"• /set_interval daily 15:00 UTC+7\n"
         )
         return
     
-    # Try to save the interval
-    success = set_user_interval(user_id, interval_seconds, send_time)
+    # Set timezone if provided, otherwise try to auto-detect
+    if timezone_input:
+        parsed_tz = parse_timezone_input(timezone_input)
+        if not parsed_tz:
+            await update.message.reply_text(
+                f"Invalid timezone: {timezone_input}\n\n"
+                f"Valid formats:\n"
+                f"• UTC+7, GMT-5, +8, -3\n"
+                f"• Asia/Bangkok, Europe/London\n"
+                f"• EST, PST, CET, JST\n\n"
+                f"Examples:\n"
+                f"• /set_interval daily 9:00 UTC+7\n"
+                f"• /set_interval weekly 15:30 Asia/Bangkok\n"
+                f"• /set_interval 12h EST"
+            )
+            return
+        
+        tz_success = set_user_timezone(user_id, parsed_tz)
+        if not tz_success:
+            await update.message.reply_text("Error setting timezone. Please try again.")
+            return
+    else:
+        # No timezone provided - user will use their current timezone (default UTC)
+        current_tz = get_user_timezone(user_id)
+        if current_tz == 'UTC':
+            print(f"User {user_id} using default timezone: UTC")
     
+    # Save interval
+    success = set_user_interval(user_id, interval_seconds, send_time)
     if not success:
         await update.message.reply_text(
-            "Sorry, there was an error saving your settings. Please try again.\n"
-            "If the problem persists, contact support."
+            "Sorry, there was an error saving your settings. Please try again."
+        )
+        return
+    
+    # Show confirmation
+    user_tz = get_user_timezone(user_id)
+    user_current_time = get_user_time(user_id)
+    
+    # Format interval for display
+    if interval_seconds < 3600:
+        display = f"{interval_seconds // 60} minutes"
+    elif interval_seconds < 86400:
+        display = f"{interval_seconds // 3600} hours"
+    elif interval_seconds < 604800:
+        display = f"{interval_seconds // 86400} day(s)"
+    else:
+        display = f"{interval_seconds // 604800} week(s)"
+    
+    time_notice = f" at {send_time}" if send_time else ""
+    
+    # Calculate next update time
+    current_time_utc = datetime.utcnow()
+    if send_time:
+        next_update_utc = align_to_send_time_with_tz(current_time_utc, send_time, user_id)
+        next_update_user_tz = get_user_time(user_id, next_update_utc)
+        next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
+    else:
+        next_update_user_tz = user_current_time + timedelta(seconds=interval_seconds)
+        if interval_seconds < 3600:
+            next_update_str = f"in {interval_seconds // 60} minutes"
+        elif interval_seconds < 86400:
+            next_update_str = f"in {interval_seconds // 3600} hours"
+        else:
+            next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
+    
+    confirmation_message = (
+        f"News updates configured successfully!\n\n"
+        f"Frequency: Every {display}{time_notice}\n"
+        f"Current time: {user_current_time.strftime('%Y-%m-%d %H:%M:%S ')}{user_tz}\n"
+        f"Next update: {next_update_str}\n\n"
+        f"Commands:\n"
+        f"• /news - Get immediate update\n"
+        f"• /status - Check settings\n"
+    )
+    
+    await update.message.reply_text(confirmation_message)
         )
         return
     
@@ -289,30 +503,36 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     time_notice = f" at {send_time}" if send_time else ""
     
-    # Calculate next update time for confirmation
-    current_time = datetime.now()
+    # Calculate next update time for confirmation using user's timezone
+    current_time = datetime.utcnow()
+    user_current_time = get_user_time(user_id, current_time)
+    user_tz = get_user_timezone(user_id)
+    
     if send_time:
-        # If specific time is set, calculate next occurrence
-        next_update = align_to_send_time(current_time, send_time)
-        next_update_str = next_update.strftime('%Y-%m-%d %H:%M')
+        # If specific time is set, calculate next occurrence in user's timezone
+        next_update_utc = align_to_send_time_with_tz(current_time, send_time, user_id)
+        next_update_user_tz = get_user_time(user_id, next_update_utc)
+        next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
     else:
         # If no specific time, next update is after the interval
-        next_update = current_time + timedelta(seconds=interval_seconds)
+        next_update_user_tz = user_current_time + timedelta(seconds=interval_seconds)
         if interval_seconds < 3600:
             next_update_str = f"in {interval_seconds // 60} minutes"
         elif interval_seconds < 86400:
             next_update_str = f"in {interval_seconds // 3600} hours"
         else:
-            next_update_str = next_update.strftime('%Y-%m-%d %H:%M')
+            next_update_str = next_update_user_tz.strftime('%Y-%m-%d %H:%M')
     
     confirmation_message = (
         f"News interval successfully configured!\n\n"
         f"Frequency: Every {display}{time_notice}\n"
+        f"Current time: {user_current_time.strftime('%Y-%m-%d %H:%M:%S ')}{user_tz}\n"
         f"Next update: {next_update_str}\n"
         f"Content: Financial news covering economy, stocks, crypto, forex, and precious metals\n\n"
         f"You can:\n"
         f"• Use /news for immediate update\n"
         f"• Use /status to check your settings\n"
+        f"• Use /timezone to change your timezone\n"
         f"• Use /set_interval again to change settings"
     )
     
@@ -348,7 +568,7 @@ async def fetch_tavily_sources(query: str, max_results: int = 5) -> List[Dict]:
 
 async def clean_tavily_content(title: str, content: str) -> Tuple[str, str]:
     """Clean tavily search result to be readable by user."""
-    prompt = f"""Summarize this search result from Tavily:
+    prompt = f"""Summarize without greetings:
                     {title}
                     {content}"""
     
@@ -465,9 +685,6 @@ async def send_financial_news(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=chat_id, text=chunk)
         else:
             await context.bot.send_message(chat_id=chat_id, text=message)
-        
-        # Update last sent time
-        update_last_sent(chat_id, datetime.now().isoformat())
     
     except Exception as e:
         error_msg = f"Error sending news: {str(e)}"
@@ -486,9 +703,11 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No interval set. Use /set_interval to configure news updates.")
         return
     
-    last_sent_str = user_data.get("last_sent")
     send_time_str = user_data.get("send_time")
-    current_time = datetime.now()
+    user_tz = get_user_timezone(user_id)
+    
+    current_time_utc = datetime.utcnow()
+    current_time_user = get_user_time(user_id, current_time_utc)
     
     # Format interval for display
     if interval_seconds < 3600:
@@ -500,39 +719,33 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         display = f"{interval_seconds // 604800} week(s)"
     
-    # Calculate next update time
-    if last_sent_str:
-        try:
-            last_sent = datetime.fromisoformat(last_sent_str)
-            base_time = last_sent + timedelta(seconds=interval_seconds)
-        except ValueError:
-            base_time = current_time
-    else:
-        base_time = current_time
+    # Calculate next update time using timezone-aware functions
+    base_time = current_time_utc
     
-    due_time = base_time
+    due_time_utc = base_time
     if send_time_str:
-        due_time = align_to_send_time(base_time, send_time_str)
+        due_time_utc = align_to_send_time_with_tz(base_time, send_time_str, user_id)
+    else:
+        due_time_utc = base_time + timedelta(seconds=interval_seconds)
     
+    due_time_user = get_user_time(user_id, due_time_utc)
     time_notice = f" at {send_time_str}" if send_time_str else ""
     
-    if current_time >= due_time:
+    if current_time_utc >= due_time_utc:
         next_update = "Next update: Due now (will be sent within 5 minutes)"
     else:
-        time_diff = due_time - current_time
+        time_diff = due_time_utc - current_time_utc
         if time_diff.total_seconds() < 3600:
             next_update = f"Next update: In {int(time_diff.total_seconds() // 60)} minutes"
         elif time_diff.total_seconds() < 86400:
             next_update = f"Next update: In {int(time_diff.total_seconds() // 3600)} hours"
         else:
-            next_update = f"Next update: {due_time.strftime('%Y-%m-%d %H:%M')}"
-    
-    last_sent_display = "Never" if not last_sent_str else datetime.fromisoformat(last_sent_str).strftime('%Y-%m-%d %H:%M')
+            next_update = f"Next update: {due_time_user.strftime('%Y-%m-%d %H:%M')}"
     
     status_message = (
         f"Your News Settings\n\n"
         f"Interval: Every {display}{time_notice}\n"
-        f"Last sent: {last_sent_display}\n"
+        f"Current time: {current_time_user.strftime('%Y-%m-%d %H:%M:%S ')}{user_tz}\n"
         f"{next_update}\n\n"
         f"Use /news for immediate update\n"
         f"Use /set_interval to change settings"
@@ -591,12 +804,48 @@ async def query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(chat_id=chat_id, text=message)
 
+async def timezone_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /timezone command - view or set timezone."""
+    user_id = update.effective_user.id
+    current_tz = get_user_timezone(user_id)
+    user_time = get_user_time(user_id)
+    
+    if context.args:
+        # Set timezone
+        timezone_input = " ".join(context.args)
+        parsed_tz = parse_timezone_input(timezone_input)
+        
+        if not parsed_tz:
+            await update.message.reply_text(
+                f"Invalid timezone: {timezone_input}\n\n"
+                f"Use /set_interval to set timezone with your schedule.\n"
+                f"Example: /set_interval daily 9:00 UTC+7"
+            )
+            return
+        
+        success = set_user_timezone(user_id, parsed_tz)
+        if success:
+            new_user_time = get_user_time(user_id)
+            await update.message.reply_text(
+                f"Timezone updated!\n"
+                f"Current time: {new_user_time.strftime('%Y-%m-%d %H:%M:%S ')}{parsed_tz}"
+            )
+        else:
+            await update.message.reply_text("Error setting timezone. Please try again.")
+    else:
+        # Show current timezone
+        await update.message.reply_text(
+            f"Current time: {user_time.strftime('%Y-%m-%d %H:%M:%S ')}{current_tz}\n\n"
+            f"To change timezone: /timezone UTC+7\n"
+            f"Or use: /set_interval daily 9:00 Asia/Bangkok"
+        )
+
 async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
     """Check all users and send updates if interval has passed."""
     users = get_all_users()
-    current_time = datetime.now()
+    current_time_utc = datetime.utcnow()
     
-    print(f"Checking updates at {current_time}")  # Debug log
+    print(f"Checking updates at {current_time_utc} UTC")  # Debug log
     
     for user_id, user_data in users:
         interval_seconds = user_data.get("interval_seconds")
@@ -604,28 +853,25 @@ async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
             print(f"User {user_id}: No interval set, skipping")
             continue
         
-        last_sent_str = user_data.get("last_sent")
         send_time_str = user_data.get("send_time")
+        user_tz = get_user_timezone(user_id)
+        user_current_time = get_user_time(user_id, current_time_utc)
         
-        if last_sent_str:
-            try:
-                last_sent = datetime.fromisoformat(last_sent_str)
-                base_time = last_sent + timedelta(seconds=interval_seconds)
-            except ValueError:
-                print(f"User {user_id}: Invalid last_sent format, using current time")
-                base_time = current_time - timedelta(seconds=interval_seconds + 1)
-        else:
-            # If no last_sent, send immediately
-            print(f"User {user_id}: No last_sent, scheduling immediate send")
-            base_time = current_time - timedelta(seconds=interval_seconds + 1)
+        # Calculate when next update should be sent
+        base_time = current_time_utc
         
-        due_time = base_time
+        due_time_utc = base_time
         if send_time_str:
-            due_time = align_to_send_time(base_time, send_time_str)
+            due_time_utc = align_to_send_time_with_tz(base_time, send_time_str, user_id)
+        else:
+            # For interval-based updates without specific time, send immediately
+            due_time_utc = current_time_utc
         
-        print(f"User {user_id}: Current={current_time}, Due={due_time}, Should send={current_time >= due_time}")
+        due_time_user = get_user_time(user_id, due_time_utc)
         
-        if current_time < due_time:
+        print(f"User {user_id} ({user_tz}): Current={user_current_time.strftime('%H:%M')}, Due={due_time_user.strftime('%H:%M')}, Should send={current_time_utc >= due_time_utc}")
+        
+        if current_time_utc < due_time_utc:
             continue
         
         # Send update
@@ -661,6 +907,7 @@ def main():
     application.add_handler(CommandHandler("news", news))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("query", query))
+    application.add_handler(CommandHandler("timezone", timezone_cmd))
     
     # Start periodic task
     job_queue = application.job_queue
@@ -672,9 +919,26 @@ def main():
         )
     
     print("Bot is starting...")
-    # Run bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    
+    try:
+        # Run bot with error handling
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES, 
+            drop_pending_updates=True,
+            close_loop=False
+        )
+    except Exception as e:
+        if "Conflict" in str(e) and "getUpdates" in str(e):
+            print("\nERROR: Another bot instance is already running!")
+            print("Please stop all other instances of this bot before starting a new one.")
+        else:
+            print(f"\nUnexpected error: {e}")
+        raise
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\nFatal error: {e}")
+        exit(1)
 

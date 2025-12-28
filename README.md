@@ -1,13 +1,15 @@
 # FinNewsBot - Financial News Telegram Bot
 
-A Telegram bot that delivers financial news about stocks and cryptocurrencies using Tavily web search.
+A Telegram bot that delivers financial news about stocks and cryptocurrencies using Tavily web search with timezone-aware scheduling.
 
 ## Features
 
 - **Web Search**: Integrates with Tavily API for real-time financial news search
 - **LLM Q&A**: `/query` command uses AI models via OpenRouter to answer questions with cited sources
+- **Timezone Support**: Set your timezone for accurate delivery times
 - **Customizable Intervals**: Set news update frequency and preferred delivery time
-- **Financial Focus**: Specialized in stock market and cryptocurrency news with diversified categories (Bitcoin, other crypto, stocks, global markets)
+- **Financial Focus**: Specialized in stock market and cryptocurrency news with diversified categories
+- **SQLite Storage**: Reliable database storage for user preferences
 
 ## Prerequisites
 
@@ -52,74 +54,111 @@ python main.py
 
 3. Send `/start` to begin
 
-4. Get your news immediately with `/news`
-or
-Set your news interval using:
+4. Set your news schedule with timezone:
 ```
-/set_interval 1 day
+/set_interval daily 9:00 UTC+7
+/set_interval weekly 15:30 Asia/Bangkok
+/set_interval 12h EST
 ```
-
-Optionally add a preferred delivery time (if not specified, updates start from current time):
-```
-/set_interval daily 7:00
-/set_interval 1d 7AM
-/set_interval weekly 9:30
-```
-
-Accepted time formats: `HH:MM` (24-hour) or `H[H]AM/PM`.
-
-Available intervals:
-- `3h` or `3 hours`
-- `6h` or `6 hours`
-- `12h` or `12 hours`
-- `1d` or `1 day` or `daily`
-- `3d` or `3 days`
-- `1w` or `1 week` or `weekly`
 
 ## Commands
 
 - `/start` - Start the bot and see welcome message
-- `/set_interval <interval> [<time>]` - Set update frequency and optional delivery time (e.g., `/set_interval daily 7AM` or `/set_interval weekly 9:30`). If no time is specified, updates start from current time.
-- `/news` - Receive the latest news update immediately
-- `/query <question>` - Ask any financial question answered by the LLM with Tavily-backed citations
+- `/set_interval <frequency> [time] [timezone]` - Set update frequency, time, and timezone
+- `/news` - Get immediate news update
+- `/status` - Check your current settings and next update time
+- `/query <question>` - Ask financial questions with AI-powered answers
+- `/timezone [timezone]` - View or set your timezone
 
-## How It Works
+## Interval Options
 
-1. The bot uses Tavily API to fetch the latest financial news about Bitcoin, other crypto, individual stocks, and global markets
-2. Each update contains up to 5 items, one per category, so you don’t just see 5 Bitcoin headlines in a row
-3. News updates are sent to users based on their configured intervals (and optional delivery time)
-4. The bot checks every 5 minutes if any user is due for an update
+- **Frequency**: `3h`, `6h`, `12h`, `daily`, `3d`, `weekly`
+- **Time**: `9:00`, `15:30`, `7AM`, `3PM` (optional)
+- **Timezone**: `UTC+7`, `Asia/Bangkok`, `EST`, `PST`, etc. (optional)
 
-## Configuration
+## Examples
 
-### News Categories
+### Basic Setup
+```
+/set_interval daily
+/set_interval 12h
+/set_interval weekly
+```
 
-`main.py` defines five Tavily search queries that map to the slots in each update:
+### With Specific Time
+```
+/set_interval daily 9:00
+/set_interval weekly 15:30
+/set_interval 12h 8:00
+```
 
-1. Economy
-2. Global stock/indices & macro news
-3. Individual stocks
-4. Crypto market
-5. Foreign exchange
-6. Precious metals
+### With Timezone
+```
+/set_interval daily 9:00 UTC+7
+/set_interval weekly 15:30 Asia/Bangkok
+/set_interval 12h EST
+```
 
-Adjust those query strings if you want different coverage.
+## Timezone Support
 
-### LLM Settings
+### Supported Formats
+- **UTC Offsets**: `+7`, `-5`, `UTC+8`, `GMT-3`
+- **Timezone Names**: `Asia/Bangkok`, `Europe/London`, `America/New_York`
+- **Common Codes**: `EST`, `PST`, `CET`, `JST`, `IST`
 
-The `/query` command uses OpenRouter API:
+### How It Works
+- All times are stored in UTC internally
+- Display times are converted to your timezone
+- Scheduled deliveries respect your local time
+- Default timezone is UTC if not set
 
-- `OPENROUTER_API_KEY` is required for API access
-- Responses cite the numbered Tavily sources (e.g., `[1]`)
+## News Categories
+
+The bot fetches news from 6 categories:
+1. **Economy** - Economic overview and indicators
+2. **Global Stock Market** - Market indices and macro news
+3. **Individual Stocks** - Company-specific news
+4. **Crypto Market** - Cryptocurrency market updates
+5. **Forex Market** - Foreign exchange news
+6. **Precious Metals** - Gold, silver, and metals market
 
 ## Data Storage
 
-User preferences are stored in `user_data.json`. In production, consider using a proper database.
+- **Database**: SQLite (`user_data.db`)
+- **Migration**: Automatic migration from JSON if `user_data.json` exists
+- **Backup**: Use `migrate_to_sqlite.py` for manual migration
+
+## Configuration
+
+### LLM Settings
+- **Model**: `meta-llama/llama-3.3-70b-instruct:free` (via OpenRouter)
+- **Max Tokens**: 400
+- **Temperature**: 0.6
+
+### Update Schedule
+- **Check Interval**: Every 5 minutes
+- **Timezone Aware**: All calculations respect user timezones
+- **Error Handling**: Comprehensive error handling with user feedback
 
 ## Troubleshooting
 
-- **API errors**: Verify your API keys (TELEGRAM_BOT_TOKEN, TAVILY_API_KEY, OPENROUTER_API_KEY) are correct in the `.env` file
-- **No news updates**: Check that your interval is set correctly and the bot is running
+### Common Issues
+- **API errors**: Verify API keys in `.env` file
+- **No updates**: Check interval settings with `/status`
+- **Wrong time**: Set correct timezone with `/timezone`
+- **Bot conflict**: Only run one instance at a time
+
+### Error Messages
+- **Invalid timezone**: Use supported timezone formats
+- **Invalid interval**: Use valid frequency options
+- **Database errors**: Check file permissions for SQLite
+
+## Migration from JSON
+
+If upgrading from a previous version:
+```bash
+python migrate_to_sqlite.py
+```
 
 ## License
 
@@ -128,4 +167,3 @@ MIT License
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
