@@ -230,10 +230,14 @@ def parse_timezone_input(tz_input: str) -> Optional[str]:
         
         # For simple hour offsets, use Etc/GMT format (note: signs are reversed in Etc/GMT)
         if minutes == 0:
-            return f"Etc/GMT{-hours if sign == '+' else hours:+d}"
+            result = f"Etc/GMT{-hours if sign == '+' else hours:+d}"
+            print(f"Timezone parsing: '{tz_input}' -> '{result}'")
+            return result
         else:
             # For non-hour offsets, create a fixed offset name
-            return f"UTC{sign}{hours:02d}:{minutes:02d}"
+            result = f"UTC{sign}{hours:02d}:{minutes:02d}"
+            print(f"Timezone parsing: '{tz_input}' -> '{result}'")
+            return result
     
     # Try as direct timezone name - pytz will validate it
     try:
@@ -544,6 +548,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Error setting timezone. Please try again.")
         return
     print(f"User {user_id} timezone set to: {parsed_tz}")
+    print(f"Parsed timezone input '{timezone_input}' -> stored as '{parsed_tz}'")
     
     # Save interval
     success = set_user_interval(user_id, interval_seconds, send_time)
@@ -556,9 +561,13 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show confirmation - get timezone after it's been set
     user_tz = get_user_timezone(user_id)
     user_tz_display = get_user_timezone_display(user_id)
-    user_current_time = get_user_time(user_id)
+    
+    # Get current UTC time and convert to user's timezone
+    current_time_utc = datetime.utcnow()
+    user_current_time = get_user_time(user_id, current_time_utc)
     
     print(f"User {user_id} confirmation - stored tz: {user_tz}, display tz: {user_tz_display}")
+    print(f"UTC time: {current_time_utc}, User time: {user_current_time}")
     
     # Format interval for display
     if interval_seconds < 3600:
@@ -572,8 +581,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     time_notice = f" at {send_time} {user_tz_display}" if send_time else ""
     
-    # Calculate next update time
-    current_time_utc = datetime.utcnow()
+    # Calculate next update time using the same UTC reference
     if send_time:
         next_update_utc = align_to_send_time_with_tz(current_time_utc, send_time, user_id)
         next_update_user_tz = get_user_time(user_id, next_update_utc)
