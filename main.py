@@ -503,7 +503,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):is th
             f"Examples:\n"
             f"• /set_interval daily UTC+7 (will use current time)\n"
             f"• /set_interval 8h 9AM Asia/Bangkok\n"
-            f"• /set_interval weekly 15:00 EST\n""
+            f"• /set_interval weekly 15:00 EST\n"
         )
         return
     
