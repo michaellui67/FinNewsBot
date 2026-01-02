@@ -31,23 +31,83 @@ def init_database():
         CREATE TABLE IF NOT EXISTS user_settings (
             user_id INTEGER PRIMARY KEY,
             interval_seconds INTEGER,
-            send_time TEXT,
-            timezone TEXT DEFAULT 'UTC'
+            send_time_utc TEXT,
+            user_timezone TEXT DEFAULT 'UTC'
         )
     ''')
     
-    # Add timezone column to existing tables if it doesn't exist
+    # Add new columns for UTC storage and user timezone
     try:
-        cursor.execute('ALTER TABLE user_settings ADD COLUMN timezone TEXT DEFAULT "UTC"')
+        cursor.execute('ALTER TABLE user_settings ADD COLUMN send_time_utc TEXT')
     except sqlite3.OperationalError:
-        # Column already exists
+        pass
+    try:
+        cursor.execute('ALTER TABLE user_settings ADD COLUMN user_timezone TEXT DEFAULT "UTC"')
+    except sqlite3.OperationalError:
+        pass
+    
+    # Migrate old data if needed
+    try:
+        cursor.execute('UPDATE user_settings SET user_timezone = timezone WHERE user_timezone IS NULL')
+        cursor.execute('UPDATE user_settings SET send_time_utc = send_time WHERE send_time_utc IS NULL')
+    except sqlite3.OperationalError:
         pass
     
     conn.commit()
     conn.close()
 
+def convert_user_time_to_utc(time_str: str, user_timezone: str) -> str:
+    """Convert user's local time to UTC time string."""
+    if not time_str:
+        return None
+    
+    try:
+        # Parse the time string (HH:MM format)
+        hour, minute = map(int, time_str.split(':'))
+        
+        # Create a datetime object for today in user's timezone
+        user_tz = pytz.timezone(user_timezone)
+        today = datetime.now(user_tz).date()
+        
+        # Create naive datetime and localize to user timezone
+        naive_dt = datetime.combine(today, datetime.min.time().replace(hour=hour, minute=minute))
+        user_dt = user_tz.localize(naive_dt)
+        
+        # Convert to UTC
+        utc_dt = user_dt.astimezone(pytz.utc)
+        
+        # Return as HH:MM string
+        return utc_dt.strftime('%H:%M')
+    except Exception as e:
+        print(f"Error converting time to UTC: {e}")
+        return time_str
+
+def convert_utc_time_to_user(time_str: str, user_timezone: str) -> str:
+    """Convert UTC time string to user's local time string."""
+    if not time_str:
+        return None
+    
+    try:
+        # Parse the UTC time string (HH:MM format)
+        hour, minute = map(int, time_str.split(':'))
+        
+        # Create a datetime object for today in UTC
+        today = datetime.utcnow().date()
+        naive_dt = datetime.combine(today, datetime.min.time().replace(hour=hour, minute=minute))
+        utc_dt = pytz.utc.localize(naive_dt)
+        
+        # Convert to user timezone
+        user_tz = pytz.timezone(user_timezone)
+        user_dt = utc_dt.astimezone(user_tz)
+        
+        # Return as HH:MM string
+        return user_dt.strftime('%H:%M')
+    except Exception as e:
+        print(f"Error converting UTC to user time: {e}")
+        return time_str
+
 def get_user_timezone_display(user_id: int) -> str:
-    """Get user's timezone in a user-friendly display format."""
+    """Get user's timezone."""
     tz_str = get_user_timezone(user_id)
     
     # Convert Etc/GMT format back to user-friendly format
@@ -114,7 +174,7 @@ def get_user_timezone_display(user_id: int) -> str:
     return tz_str
 
 def parse_interval(interval_str: str) -> Optional[int]:
-    """Parse interval string and return seconds. Supports dynamic numbers."""
+    """Parse interval string and return seconds."""
     interval_str = interval_str.lower().strip()
     
     # Handle special aliases first
@@ -159,7 +219,7 @@ def get_user_timezone(user_id: int) -> str:
     """Get user's timezone."""
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT timezone FROM user_settings WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT user_timezone FROM user_settings WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else 'UTC'
@@ -173,11 +233,20 @@ def set_user_timezone(user_id: int, timezone_str: str) -> bool:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR IGNORE INTO user_settings (user_id, timezone) VALUES (?, ?)
+            INSERT OR IGNORE INTO user_settings (user_id, user_timezone) VALUES (?, ?)
         ''', (user_id, timezone_str))
         cursor.execute('''
-            UPDATE user_settings SET timezone = ? WHERE user_id = ?
+            UPDATE user_settings SET user_timezone = ? WHERE user_id = ?
         ''', (timezone_str, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    except pytz.exceptions.UnknownTimeZoneError:
+        print(f"Invalid timezone: {timezone_str}")
+        return False
+    except Exception as e:
+        print(f"Error setting timezone: {e}")
+        return False
         conn.commit()
         conn.close()
         return True
@@ -303,20 +372,26 @@ def get_user_interval(user_id: int) -> int:
     conn.close()
     return result[0] if result else None
 
-def set_user_interval(user_id: int, interval_seconds: int, send_time: Optional[str] = None):
+def set_user_interval(user_id: int, interval_seconds: int, send_time_user: Optional[str] = None, user_timezone: str = 'UTC'):
     """Set user's news interval and optional preferred send time."""
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
         
+        # Convert user time to UTC for storage
+        send_time_utc = None
+        if send_time_user:
+            send_time_utc = convert_user_time_to_utc(send_time_user, user_timezone)
+            print(f"Converting user time {send_time_user} {user_timezone} -> UTC {send_time_utc}")
+        
         cursor.execute('''
-            INSERT OR REPLACE INTO user_settings (user_id, interval_seconds, send_time)
-            VALUES (?, ?, ?)
-        ''', (user_id, interval_seconds, send_time))
+            INSERT OR REPLACE INTO user_settings (user_id, interval_seconds, send_time_utc, user_timezone)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, interval_seconds, send_time_utc, user_timezone))
         
         conn.commit()
         conn.close()
-        print(f"Successfully saved interval for user {user_id}: {interval_seconds}s, send_time: {send_time}")
+        print(f"Successfully saved interval for user {user_id}: {interval_seconds}s, send_time_utc: {send_time_utc}, timezone: {user_timezone}")
         return True
     except Exception as e:
         print(f"Error saving user interval: {e}")
@@ -326,15 +401,24 @@ def get_user_data(user_id: int) -> Dict:
     """Get all user data."""
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT interval_seconds, send_time, timezone FROM user_settings WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT interval_seconds, send_time_utc, user_timezone FROM user_settings WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     conn.close()
     
     if result:
+        user_timezone = result[2] if result[2] else 'UTC'
+        send_time_utc = result[1]
+        
+        # Convert UTC time back to user time for display
+        send_time_user = None
+        if send_time_utc:
+            send_time_user = convert_utc_time_to_user(send_time_utc, user_timezone)
+        
         return {
             "interval_seconds": result[0],
-            "send_time": result[1],
-            "timezone": result[2] if result[2] else 'UTC'
+            "send_time_utc": send_time_utc,
+            "send_time_user": send_time_user,
+            "user_timezone": user_timezone
         }
     return {}
 
@@ -342,7 +426,7 @@ def get_all_users() -> List[Tuple[int, Dict]]:
     """Get all users and their settings."""
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT user_id, interval_seconds, send_time, timezone FROM user_settings')
+    cursor.execute('SELECT user_id, interval_seconds, send_time_utc, user_timezone FROM user_settings')
     results = cursor.fetchall()
     conn.close()
     
@@ -350,15 +434,15 @@ def get_all_users() -> List[Tuple[int, Dict]]:
     for row in results:
         user_data = {
             "interval_seconds": row[1],
-            "send_time": row[2],
-            "timezone": row[3] if row[3] else 'UTC'
+            "send_time_utc": row[2],
+            "user_timezone": row[3] if row[3] else 'UTC'
         }
         users.append((row[0], user_data))
     
     return users
 
 def parse_time_input(time_input: str) -> Optional[str]:
-    """Parse user provided time strings such as 7AM, 7:00, or 19:30."""
+    """Parse user provided time strings."""
     if not time_input:
         return None
     cleaned = time_input.strip().lower()
@@ -517,7 +601,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Timezone is required!\n\n"
             f"Usage: /set_interval <frequency> [time] <timezone>\n\n"
             f"Valid timezone formats:\n"
-            f"• UTC+7, GMT-5, +8, -3\n"
+            f"• UTC+7, GMT-5\n"
             f"• Asia/Bangkok, Europe/London\n"
             f"• EST, PST, CET, JST\n\n"
             f"Examples:\n"
@@ -533,7 +617,7 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Invalid timezone: {timezone_input}\n\n"
             f"Valid formats:\n"
-            f"• UTC+7, GMT-5, +8, -3\n"
+            f"• UTC+7, GMT-5\n"
             f"• Asia/Bangkok, Europe/London\n"
             f"• EST, PST, CET, JST\n\n"
             f"Examples:\n"
@@ -550,8 +634,8 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"User {user_id} timezone set to: {parsed_tz}")
     print(f"Parsed timezone input '{timezone_input}' -> stored as '{parsed_tz}'")
     
-    # Save interval
-    success = set_user_interval(user_id, interval_seconds, send_time)
+    # Save interval with timezone conversion
+    success = set_user_interval(user_id, interval_seconds, send_time, parsed_tz)
     if not success:
         await update.message.reply_text(
             "Sorry, there was an error saving your settings. Please try again."
@@ -772,7 +856,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No interval set. Use /set_interval to configure news updates.")
         return
     
-    send_time_str = user_data.get("send_time")
+    send_time_user = user_data.get("send_time_user")  # This is already converted to user timezone
     user_tz = get_user_timezone(user_id)
     user_tz_display = get_user_timezone_display(user_id)
     
@@ -789,17 +873,24 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         display = f"{interval_seconds // 604800} week(s)"
     
-    # Calculate next update time using timezone-aware functions
+    # Calculate next update time using UTC times stored in database
     base_time = current_time_utc
     
     due_time_utc = base_time
-    if send_time_str:
-        due_time_utc = align_to_send_time_with_tz(base_time, send_time_str, user_id)
+    if send_time_user:  # We have the user time, need to convert to UTC for calculation
+        send_time_utc = convert_user_time_to_utc(send_time_user, user_tz)
+        hour, minute = map(int, send_time_utc.split(':'))
+        today_utc = current_time_utc.date()
+        due_time_utc = datetime.combine(today_utc, datetime.min.time().replace(hour=hour, minute=minute))
+        
+        # If the time has passed today, schedule for tomorrow
+        if due_time_utc <= current_time_utc:
+            due_time_utc += timedelta(days=1)
     else:
         due_time_utc = base_time + timedelta(seconds=interval_seconds)
     
     due_time_user = get_user_time(user_id, due_time_utc)
-    time_notice = f" at {send_time_str} {user_tz_display}" if send_time_str else ""
+    time_notice = f" at {send_time_user} {user_tz_display}" if send_time_user else ""
     
     if current_time_utc >= due_time_utc:
         next_update = "Next update: Due now (will be sent within 5 minutes)"
@@ -924,21 +1015,28 @@ async def check_and_send_updates(context: ContextTypes.DEFAULT_TYPE):
             print(f"User {user_id}: No interval set, skipping")
             continue
         
-        send_time_str = user_data.get("send_time")
-        user_tz = get_user_timezone(user_id)
+        send_time_utc = user_data.get("send_time_utc")  # This is stored in UTC
+        user_tz = user_data.get("user_timezone", 'UTC')
         user_current_time = get_user_time(user_id, current_time_utc)
         
-        # Calculate when next update should be sent
+        # Calculate when next update should be sent using UTC times
         base_time = current_time_utc
         
         due_time_utc = base_time
-        if send_time_str:
-            due_time_utc = align_to_send_time_with_tz(base_time, send_time_str, user_id)
+        if send_time_utc:
+            # Parse UTC time and create today's datetime in UTC
+            hour, minute = map(int, send_time_utc.split(':'))
+            today_utc = current_time_utc.date()
+            due_time_utc = datetime.combine(today_utc, datetime.min.time().replace(hour=hour, minute=minute))
+            
+            # If the time has passed today, schedule for tomorrow
+            if due_time_utc <= current_time_utc:
+                due_time_utc += timedelta(days=1)
         else:
             # For interval-based updates without specific time, send immediately
             due_time_utc = current_time_utc
         
-        due_time_user = get_user_time(user_id, due_time_utc)
+        due_time_user = get_user_time(user_id, pytz.utc.localize(due_time_utc))
         
         print(f"User {user_id} ({user_tz}): Current={user_current_time.strftime('%H:%M')}, Due={due_time_user.strftime('%H:%M')}, Should send={current_time_utc >= due_time_utc}")
         
